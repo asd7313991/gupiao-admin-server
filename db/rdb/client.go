@@ -2,16 +2,29 @@ package rdb
 
 import (
 	"context"
+	"sync"
+
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"api-server/config"
 )
 
-// redisDB redis连接池
-var client *redis.Client
+var (
+	client   *redis.Client
+	initOnce sync.Once
+)
 
-// InitRedisClient 初始化客户端连接池
+func GetClient() *redis.Client {
+	initOnce.Do(func() {
+		if err := Init(); err != nil {
+			zap.L().Fatal("redis init failed", zap.Error(err))
+		}
+	})
+	return client
+}
+
+// Init 初始化 Redis 客户端连接池
 func Init() error {
 	client = redis.NewClient(&redis.Options{
 		Addr:         config.RedisHost,
@@ -24,13 +37,6 @@ func Init() error {
 		return err
 	}
 	return nil
-}
-
-func GetClient() *redis.Client {
-	if client == nil {
-		Init()
-	}
-	return client
 }
 
 func CloseClient() {

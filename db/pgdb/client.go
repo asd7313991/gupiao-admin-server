@@ -1,6 +1,7 @@
 package pgdb
 
 import (
+	"sync"
 	"time"
 
 	"api-server/config"
@@ -10,12 +11,17 @@ import (
 	"gorm.io/gorm"
 )
 
-var client *gorm.DB
+var (
+	client   *gorm.DB
+	initOnce sync.Once
+)
 
 func GetClient() *gorm.DB {
-	if client == nil {
-		Init()
-	}
+	initOnce.Do(func() {
+		if err := Init(); err != nil {
+			zap.L().Fatal("pgdb init failed", zap.Error(err))
+		}
+	})
 	return client
 }
 

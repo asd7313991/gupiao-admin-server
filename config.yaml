@@ -37,6 +37,10 @@ admin:
   password: "123456"  # Admin password - MUST be changed in production
   salt: "rHECMvW3el1zhpdzgx9dY"  # Password salt - MUST be regenerated and kept secret
 
+security:
+  google_auth_enabled: false
+  google_auth_secret: ""
+
 rate_limit:
   login_rate_per_minute: 30    # Maximum login attempts per minute per IP
   login_burst_size: 60         # Burst size for login requests

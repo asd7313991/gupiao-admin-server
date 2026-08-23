@@ -9,15 +9,15 @@ import (
 	"api-server/api/response"
 )
 
-// TokenVerify 多租户JWT认证中间件
-func TokenVerify(c *gin.Context) {
+// SetTokenClaims 校验 JWT 并将用户上下文写入请求。
+func SetTokenClaims(c *gin.Context) bool {
 	c.FormFile("file") // 防止文件未发送完成就返回错误, 导致前端504而不是正确响应
 
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
 		response.ReturnError(c, response.UNAUTHENTICATED, "未携带 token")
 		c.Abort()
-		return
+		return false
 	}
 
 	var tokenString string
@@ -33,14 +33,21 @@ func TokenVerify(c *gin.Context) {
 	if err != nil {
 		response.ReturnError(c, response.UNAUTHENTICATED, "token 解析失败")
 		c.Abort()
-		return
+		return false
 	}
 
 	// 将租户和用户信息存入上下文
 	c.Set("tenant_id", claims.TenantID)
 	c.Set("user_id", claims.UserID)
 	c.Set("account", claims.Account)
+	return true
+}
 
+// TokenVerify 多租户JWT认证中间件
+func TokenVerify(c *gin.Context) {
+	if !SetTokenClaims(c) {
+		return
+	}
 	c.Next()
 }
 

@@ -1,12 +1,18 @@
 package user
 
 import (
+	"crypto/rand"
+	"encoding/base32"
 	"errors"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
+	"api-server/config"
+	"api-server/db/pgdb"
+	"api-server/db/pgdb/system"
 	userdomain "api-server/domain/admin/user"
 )
 
@@ -225,4 +231,40 @@ func DeleteUser(c *gin.Context) {
 		return
 	}
 	response.ReturnData(c, nil)
+}
+
+func UpdateAdministratorPassword(c *gin.Context) {
+	params := &struct {
+		ID       uint   `json:"id" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}{}
+	if !middleware.CheckParam(params, c) || len(params.Password) < 6 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "密码至少 6 位")
+		return
+	}
+	if err := system.UpdateUser(&system.SystemUser{Model: gorm.Model{ID: params.ID}, Password: params.Password}); err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "修改管理员密码失败")
+		return
+	}
+	response.ReturnData(c, nil)
+}
+
+func ResetAdministratorGoogleAuthSecret(c *gin.Context) {
+	params := &struct {
+		ID uint `json:"id" binding:"required"`
+	}{}
+	if !middleware.CheckParam(params, c) {
+		return
+	}
+	bytes := make([]byte, 20)
+	if _, err := rand.Read(bytes); err != nil {
+		response.ReturnError(c, response.INTERNAL, "生成 Google 验证密钥失败")
+		return
+	}
+	secret := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes)
+	if err := pgdb.GetClient().Model(&system.SystemUser{}).Where("id = ?", params.ID).Update("google_auth_secret", secret).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "重置 Google 验证密钥失败")
+		return
+	}
+	response.ReturnData(c, gin.H{"secret": secret, "enabled": config.GoogleAuthEnabled})
 }

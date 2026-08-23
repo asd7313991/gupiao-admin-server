@@ -7,22 +7,21 @@ import (
 	"api-server/db/pgdb/system"
 )
 
-// SuperAdminVerify 超级管理员权限验证中间件
-// 只有用户ID为1的超级管理员才能执行租户管理操作
-func SuperAdminVerify(c *gin.Context) {
+// VerifySuperAdmin 验证当前请求是否属于可用的平台超级管理员。
+func VerifySuperAdmin(c *gin.Context) bool {
 	// 获取当前用户ID
 	userID := GetCurrentUserID(c)
 	if userID == 0 {
 		response.ReturnError(c, response.UNAUTHENTICATED, "用户认证失败")
 		c.Abort()
-		return
+		return false
 	}
 
 	// 检查是否为超级管理员（用户ID为1）
 	if userID != 1 {
 		response.ReturnError(c, response.PERMISSION_DENIED, "权限不足，只有超级管理员可以管理租户")
 		c.Abort()
-		return
+		return false
 	}
 
 	// 验证用户存在且状态正常
@@ -31,15 +30,23 @@ func SuperAdminVerify(c *gin.Context) {
 	if err := system.GetUser(&user); err != nil {
 		response.ReturnError(c, response.UNAUTHENTICATED, "用户不存在")
 		c.Abort()
-		return
+		return false
 	}
 
 	if user.Status != system.StatusEnabled {
 		response.ReturnError(c, response.UNAUTHENTICATED, "用户已被禁用")
 		c.Abort()
+		return false
+	}
+	return true
+}
+
+// SuperAdminVerify 超级管理员权限验证中间件
+// 只有用户ID为1的超级管理员才能执行租户管理操作
+func SuperAdminVerify(c *gin.Context) {
+	if !VerifySuperAdmin(c) {
 		return
 	}
-
 	c.Next()
 }
 

@@ -2,6 +2,31 @@ package system
 
 import "gorm.io/gorm"
 
+// AppSystemSetting 保存应用配置模块的单例 JSON 设置。
+type AppSystemSetting struct {
+	gorm.Model
+	Config string `json:"config" gorm:"type:text;not null"`
+}
+
+// AppNotice 保存应用公告，空的 RecipientIDs 表示通知所有客户。
+type AppNotice struct {
+	gorm.Model
+	Title        string `json:"title" gorm:"index"`
+	Content      string `json:"content" gorm:"type:text"`
+	Popup        bool   `json:"popup"`
+	RecipientIDs string `json:"recipient_ids" gorm:"type:text"`
+	Status       uint   `json:"status" gorm:"default:1;index"`
+}
+
+// AppArticle 保存应用内协议、规则、风险提示等富文本文章。
+type AppArticle struct {
+	gorm.Model
+	Title   string `json:"title" gorm:"index"`
+	Type    string `json:"type" gorm:"index"`
+	Content string `json:"content" gorm:"type:text"`
+	Status  uint   `json:"status" gorm:"default:1;index"`
+}
+
 // Tenant 租户/企业表
 type SystemTenant struct {
 	gorm.Model
@@ -74,16 +99,17 @@ type SystemMenuAuth struct {
 // User 用户表
 type SystemUser struct {
 	gorm.Model
-	TenantID     uint   `json:"tenant_id,omitempty" gorm:"not null;index;uniqueIndex:idx_tenant_account"` // 租户ID
-	DepartmentID uint   `json:"department_id,omitempty"`
-	RoleID       uint   `json:"role_id,omitempty"`
-	Name         string `json:"name,omitempty"`                                          // 姓名
-	Username     string `json:"username,omitempty"`                                      // 昵称
-	Account      string `json:"account,omitempty" gorm:"uniqueIndex:idx_tenant_account"` // 登录账号，同租户内唯一
-	Password     string `json:"password,omitempty"`
-	Phone        string `json:"phone,omitempty"`
-	Gender       uint   `json:"gender,omitempty"` // 性别(1:男 2:女)
-	Status       uint   `json:"status,omitempty"` // 状态(StatusEnabled: 启用, StatusDisabled: 禁用)
+	TenantID         uint   `json:"tenant_id,omitempty" gorm:"not null;index;uniqueIndex:idx_tenant_account"` // 租户ID
+	DepartmentID     uint   `json:"department_id,omitempty"`
+	RoleID           uint   `json:"role_id,omitempty"`
+	Name             string `json:"name,omitempty"`                                          // 姓名
+	Username         string `json:"username,omitempty"`                                      // 昵称
+	Account          string `json:"account,omitempty" gorm:"uniqueIndex:idx_tenant_account"` // 登录账号，同租户内唯一
+	Password         string `json:"password,omitempty"`
+	GoogleAuthSecret string `json:"-"`
+	Phone            string `json:"phone,omitempty"`
+	Gender           uint   `json:"gender,omitempty"` // 性别(1:男 2:女)
+	Status           uint   `json:"status,omitempty"` // 状态(StatusEnabled: 启用, StatusDisabled: 禁用)
 }
 
 type SystemUserLoginLog struct {
@@ -93,6 +119,155 @@ type SystemUserLoginLog struct {
 	Password    string `json:"password,omitempty"`    // 注意：此字段应为空，不记录实际密码
 	IP          string `json:"ip,omitempty"`
 	LoginStatus string `json:"login_status,omitempty"` // 登录状态：success, failed
+}
+
+// Customer 客户账户，与后台管理员 SystemUser 分离。
+type Customer struct {
+	gorm.Model
+	Phone                 string  `json:"phone" gorm:"uniqueIndex;not null"`
+	Name                  string  `json:"name"`
+	IDCard                string  `json:"id_card" gorm:"index"`
+	Password              string  `json:"-"`
+	TradePassword         string  `json:"-"`
+	BankName              string  `json:"bank_name"`
+	BankCard              string  `json:"bank_card"`
+	BankAddress           string  `json:"bank_address"`
+	GroupName             string  `json:"group_name" gorm:"default:内部"`
+	Balance               float64 `json:"balance" gorm:"default:0"`
+	StrategyBalance       float64 `json:"strategy_balance" gorm:"default:0"`
+	FrozenBalance         float64 `json:"frozen_balance" gorm:"default:0"`
+	TotalProfit           float64 `json:"total_profit" gorm:"default:0"`
+	TotalLoss             float64 `json:"total_loss" gorm:"default:0"`
+	Status                uint    `json:"status" gorm:"default:1"`
+	FundStatus            uint    `json:"fund_status" gorm:"default:1"`
+	Verified              uint    `json:"verified" gorm:"default:2"`
+	IDCardFront           string  `json:"id_card_front"`
+	IDCardBack            string  `json:"id_card_back"`
+	VerificationVideo     string  `json:"verification_video"`
+	VerificationCertifyID string  `json:"verification_certify_id" gorm:"index"`
+	VerificationRemark    string  `json:"verification_remark"`
+	Remark                string  `json:"remark"`
+}
+
+// CustomerFundRecord 记录管理员手动入账和扣款。
+type CustomerFundRecord struct {
+	gorm.Model
+	CustomerID uint    `json:"customer_id" gorm:"index;not null"`
+	Type       string  `json:"type"`
+	Direction  string  `json:"direction"`
+	Currency   string  `json:"currency"`
+	Amount     float64 `json:"amount"`
+	Balance    float64 `json:"balance"`
+	Remark     string  `json:"remark"`
+}
+
+// FinanceRecharge 保存客户充值审核和到账记录。
+type FinanceRecharge struct {
+	gorm.Model
+	RequestID     string  `json:"request_id" gorm:"uniqueIndex"`
+	CustomerID    uint    `json:"customer_id" gorm:"index:idx_recharge_customer_time;not null"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency"`
+	Method        string  `json:"method"`
+	Voucher       string  `json:"voucher"`
+	Status        uint    `json:"status" gorm:"index:idx_recharge_status_time"`
+	Remark        string  `json:"remark"`
+	FailureReason string  `json:"failure_reason"`
+	ReviewedAt    int64   `json:"reviewed_at"`
+}
+
+// FinanceWithdrawal 保存客户提现申请、银行资料和审核状态。
+type FinanceWithdrawal struct {
+	gorm.Model
+	RequestID     string  `json:"request_id" gorm:"uniqueIndex"`
+	CustomerID    uint    `json:"customer_id" gorm:"index:idx_withdrawal_customer_time;not null"`
+	Amount        float64 `json:"amount"`
+	Currency      string  `json:"currency"`
+	Method        string  `json:"method"`
+	BankName      string  `json:"bank_name"`
+	BankCard      string  `json:"bank_card"`
+	BankAddress   string  `json:"bank_address"`
+	Status        uint    `json:"status" gorm:"index:idx_withdrawal_status_time"`
+	Remark        string  `json:"remark"`
+	FailureReason string  `json:"failure_reason"`
+	ReviewedAt    int64   `json:"reviewed_at"`
+}
+
+// CustomerDevice 保存客户 App 设备与 API 连接信息。
+type CustomerDevice struct {
+	gorm.Model
+	CustomerID  uint   `json:"customer_id" gorm:"index;not null"`
+	DeviceType  string `json:"device_type"`
+	Brand       string `json:"brand"`
+	DeviceModel string `json:"device_model"`
+	DeviceID    string `json:"device_id" gorm:"uniqueIndex"`
+	APIBaseURL  string `json:"api_base_url"`
+	System      string `json:"system"`
+	AppVersion  string `json:"app_version"`
+	Blocked     uint   `json:"blocked" gorm:"default:2"`
+	LastLogin   int64  `json:"last_login"`
+}
+
+// TradePosition 保存客户证券持仓与成本、盈亏数据。
+type TradePosition struct {
+	gorm.Model
+	CustomerID   uint    `json:"customer_id" gorm:"index;not null"`
+	Symbol       string  `json:"symbol" gorm:"index"`
+	StockName    string  `json:"stock_name"`
+	Currency     string  `json:"currency"`
+	PositionQty  float64 `json:"position_qty"`
+	AvailableQty float64 `json:"available_qty"`
+	CurrentPrice float64 `json:"current_price"`
+	CostPrice    float64 `json:"cost_price"`
+	TotalCost    float64 `json:"total_cost"`
+	MarketValue  float64 `json:"market_value"`
+	ProfitLoss   float64 `json:"profit_loss"`
+	ProfitRate   float64 `json:"profit_rate"`
+	Status       uint    `json:"status" gorm:"default:1"`
+	BuyAt        int64   `json:"buy_at"`
+}
+
+// TradeRecord 保存买入、卖出等成交记录；常用筛选字段均建索引。
+type TradeRecord struct {
+	gorm.Model
+	CustomerID  uint    `json:"customer_id" gorm:"index:idx_trade_record_customer_time;not null"`
+	Symbol      string  `json:"symbol" gorm:"index:idx_trade_record_symbol_time"`
+	StockName   string  `json:"stock_name"`
+	Currency    string  `json:"currency"`
+	Direction   string  `json:"direction" gorm:"index:idx_trade_record_direction_time"`
+	TradePrice  float64 `json:"trade_price"`
+	Quantity    float64 `json:"quantity"`
+	Amount      float64 `json:"amount"`
+	StampDuty   float64 `json:"stamp_duty"`
+	TransferFee float64 `json:"transfer_fee"`
+	Commission  float64 `json:"commission"`
+	Remark      string  `json:"remark"`
+	TradeAt     int64   `json:"trade_at" gorm:"index:idx_trade_record_time"`
+}
+
+// CustomerWatchlist 保存客户自选证券，客户与证券组合唯一。
+type CustomerWatchlist struct {
+	gorm.Model
+	CustomerID uint `json:"customer_id" gorm:"not null;uniqueIndex:idx_customer_watch_security"`
+	SecurityID uint `json:"security_id" gorm:"not null;uniqueIndex:idx_customer_watch_security"`
+}
+
+// StockSecurity 缓存公开行情源同步的证券基础数据。
+type StockSecurity struct {
+	gorm.Model
+	Code       string  `json:"code" gorm:"uniqueIndex;not null"`
+	Symbol     string  `json:"symbol" gorm:"uniqueIndex;not null"`
+	Market     string  `json:"market" gorm:"index"`
+	Name       string  `json:"name" gorm:"index"`
+	Exchange   string  `json:"exchange" gorm:"index"`
+	Board      string  `json:"board" gorm:"index"`
+	LastPrice  float64 `json:"last_price"`
+	ChangeRate float64 `json:"change_rate"`
+	Volume     float64 `json:"volume"`
+	Amount     float64 `json:"amount"`
+	Turnover   float64 `json:"turnover"`
+	Status     uint    `json:"status" gorm:"default:1;index"`
+	Source     string  `json:"source"`
 }
 
 // SystemTenantMenuScope 定义每个租户可用的最大菜单范围

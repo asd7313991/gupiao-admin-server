@@ -62,6 +62,9 @@ var (
 	// admin config
 	AdminPassword string
 	PWDSalt       string
+	// security config
+	GoogleAuthEnabled bool
+	GoogleAuthSecret  string
 	// rate limit config
 	LoginRatePerMinute int
 	LoginBurstSize     int
@@ -70,6 +73,14 @@ var (
 	// tenant config
 	TenantMinQueryLength int
 	DefaultTenantCode    string
+	// aliyun financial-grade real-person verification
+	FaceRecognitionEnabled         bool
+	FaceRecognitionAccessKeyID     string
+	FaceRecognitionAccessKeySecret string
+	FaceRecognitionEndpoint        string
+	FaceRecognitionSceneID         int64
+	FaceRecognitionReturnURL       string
+	VerificationStorageDir         string
 )
 
 // page config

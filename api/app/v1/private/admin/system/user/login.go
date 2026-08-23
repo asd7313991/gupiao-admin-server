@@ -17,14 +17,14 @@ func Login(c *gin.Context) {
 		TenantCode string `json:"tenant_code" form:"tenant_code" binding:"required"` // 企业编号
 		Account    string `json:"account" form:"account" binding:"required"`         // 登录账号
 		Password   string `json:"password" form:"password" binding:"required"`
-		Captcha    string `json:"captcha" form:"captcha" binding:"required"`
-		CaptchaID  string `json:"captcha_id" form:"captcha_id" binding:"required"`
+		Captcha    string `json:"captcha" form:"captcha"`
+		CaptchaID  string `json:"captcha_id" form:"captcha_id"`
 	}{}
 	if !middleware.CheckParam(params, c) {
 		return
 	}
-	// 验证验证码
-	if !userdomain.VerifyCaptcha(params.CaptchaID, params.Captcha) {
+	// 前端未接入后端图片验证码时允许省略；提交验证码则始终校验。
+	if (params.Captcha != "" || params.CaptchaID != "") && !userdomain.VerifyCaptcha(params.CaptchaID, params.Captcha) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "验证码错误")
 		return
 	}

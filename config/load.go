@@ -89,6 +89,10 @@ func setDefaults() {
 	v.SetDefault("admin.password", "")
 	v.SetDefault("admin.salt", "")
 
+	// security
+	v.SetDefault("security.google_auth_enabled", false)
+	v.SetDefault("security.google_auth_secret", "")
+
 	// rate limit
 	v.SetDefault("rate_limit.login_rate_per_minute", 5)
 	v.SetDefault("rate_limit.login_burst_size", 10)
@@ -98,6 +102,15 @@ func setDefaults() {
 	// tenant
 	v.SetDefault("tenant.min_query_length", 3)
 	v.SetDefault("tenant.default_code", "platform")
+
+	// face recognition
+	v.SetDefault("face_recognition.enabled", false)
+	v.SetDefault("face_recognition.access_key_id", "")
+	v.SetDefault("face_recognition.access_key_secret", "")
+	v.SetDefault("face_recognition.endpoint", "cloudauth.cn-shanghai.aliyuncs.com")
+	v.SetDefault("face_recognition.scene_id", 0)
+	v.SetDefault("face_recognition.return_url", "")
+	v.SetDefault("face_recognition.storage_dir", "private/verification")
 }
 
 func applyConfig() error {
@@ -173,6 +186,8 @@ func applyConfig() error {
 	// admin
 	AdminPassword = v.GetString("admin.password")
 	PWDSalt = v.GetString("admin.salt")
+	GoogleAuthEnabled = v.GetBool("security.google_auth_enabled")
+	GoogleAuthSecret = v.GetString("security.google_auth_secret")
 
 	// rate limit
 	LoginRatePerMinute = v.GetInt("rate_limit.login_rate_per_minute")
@@ -185,6 +200,17 @@ func applyConfig() error {
 	DefaultTenantCode = v.GetString("tenant.default_code")
 	if DefaultTenantCode == "" {
 		DefaultTenantCode = "platform"
+	}
+
+	FaceRecognitionEnabled = v.GetBool("face_recognition.enabled")
+	FaceRecognitionAccessKeyID = v.GetString("face_recognition.access_key_id")
+	FaceRecognitionAccessKeySecret = v.GetString("face_recognition.access_key_secret")
+	FaceRecognitionEndpoint = v.GetString("face_recognition.endpoint")
+	FaceRecognitionSceneID = v.GetInt64("face_recognition.scene_id")
+	FaceRecognitionReturnURL = v.GetString("face_recognition.return_url")
+	VerificationStorageDir = v.GetString("face_recognition.storage_dir")
+	if VerificationStorageDir != "" && !filepath.IsAbs(VerificationStorageDir) {
+		VerificationStorageDir = filepath.Join(AbsPath, VerificationStorageDir)
 	}
 
 	return nil

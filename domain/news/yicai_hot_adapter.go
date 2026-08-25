@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/html"
 )
 
 type YicaiHotAdapter struct{}
@@ -44,7 +47,8 @@ func (adapter YicaiHotAdapter) Fetch(ctx context.Context, source SourceReader, c
 	request.Header.Set("Referer", "https://www.yicai.com/")
 	request.Header.Set("User-Agent", "stock-news-collector/1.0")
 
-	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	client := &http.Client{Timeout: timeout}
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRetryable, err)
 	}
@@ -83,7 +87,23 @@ func (adapter YicaiHotAdapter) Fetch(ctx context.Context, source SourceReader, c
 		if itemCategory == CategoryOther {
 			itemCategory = category
 		}
+		sourceURL := normalizeYicaiURL(item.URL)
+		metadata := fetchYicaiArticleMetadata(ctx, client, sourceURL, timeout)
+
 		summary := CleanText(item.NewsNotes, 600)
+		if summary == "" {
+			summary = metadata.Summary
+		}
+		content := metadata.Content
+		if content == "" {
+			content = summary
+		}
+		coverImageURL := firstImage(strings.TrimSpace(item.OriginPic), strings.TrimSpace(item.NewsThumbs), metadata.CoverImageURL)
+
+		copyrightMode := CopyrightModeMetadataOnly
+		if summary != "" || content != "" {
+			copyrightMode = CopyrightModeExcerpt
+		}
 		publishedAt := parseYicaiTime(item.CreateDate)
 		if publishedAt.IsZero() {
 			publishedAt = time.Now().UTC()
@@ -91,11 +111,11 @@ func (adapter YicaiHotAdapter) Fetch(ctx context.Context, source SourceReader, c
 		result = append(result, NormalizedNews{
 			SourceName:       defaultString(CleanText(item.NewsSource, 100), source.GetName()),
 			SourceUniqueID:   fmt.Sprintf("yicai-%d", item.NewsID),
-			SourceURL:        "https://www.yicai.com" + strings.TrimSpace(item.URL),
-			CoverImageURL:    firstImage(strings.TrimSpace(item.OriginPic), strings.TrimSpace(item.NewsThumbs)),
+			SourceURL:        sourceURL,
+			CoverImageURL:    coverImageURL,
 			Title:            title,
 			Summary:          summary,
-			Content:          summary,
+			Content:          content,
 			Author:           CleanText(item.NewsAuthor, 120),
 			Category:         itemCategory,
 			OriginalCategory: CleanText(item.ChannelName, 120),
@@ -104,11 +124,107 @@ func (adapter YicaiHotAdapter) Fetch(ctx context.Context, source SourceReader, c
 			CollectedAt:      time.Now().UTC(),
 			Region:           "CN",
 			Language:         "zh-CN",
-			CopyrightMode:    CopyrightModeMetadataOnly,
+			CopyrightMode:    copyrightMode,
 			RawData:          truncateRaw(body, 1200),
 		})
 	}
 	return result, nil
+}
+
+type yicaiArticleMetadata struct {
+	Summary       string
+	Content       string
+	CoverImageURL string
+}
+
+func normalizeYicaiURL(raw string) string {
+	base, _ := url.Parse("https://www.yicai.com")
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return "https://www.yicai.com"
+	}
+	if parsed.IsAbs() {
+		return parsed.String()
+	}
+	if base == nil {
+		return strings.TrimSpace(raw)
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func fetchYicaiArticleMetadata(ctx context.Context, client *http.Client, link string, timeout time.Duration) yicaiArticleMetadata {
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, link, nil)
+	if err != nil {
+		return yicaiArticleMetadata{}
+	}
+	request.Header.Set("User-Agent", "stock-news-collector/1.0")
+	request.Header.Set("Accept", "text/html,application/xhtml+xml")
+	request.Header.Set("Referer", "https://www.yicai.com/")
+
+	response, err := client.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		if response != nil {
+			response.Body.Close()
+		}
+		return yicaiArticleMetadata{}
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024))
+	if err != nil {
+		return yicaiArticleMetadata{}
+	}
+	root, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		return yicaiArticleMetadata{}
+	}
+
+	metadata := yicaiArticleMetadata{}
+	walkHTML(root, func(node *html.Node) {
+		if node.Type != html.ElementNode || node.Data != "meta" {
+			return
+		}
+		property := strings.ToLower(attr(node, "property"))
+		name := strings.ToLower(attr(node, "name"))
+		value := strings.TrimSpace(attr(node, "content"))
+		if (property == "og:image" || name == "og:image") && metadata.CoverImageURL == "" {
+			if strings.HasPrefix(value, "//") {
+				value = "https:" + value
+			}
+			if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+				metadata.CoverImageURL = value
+			}
+		}
+		if (name == "description" || property == "og:description") && metadata.Summary == "" {
+			metadata.Summary = CleanText(value, 300)
+		}
+	})
+
+	paragraphs := make([]string, 0, 16)
+	seen := make(map[string]struct{})
+	walkHTML(root, func(node *html.Node) {
+		if node.Type != html.ElementNode || node.Data != "p" {
+			return
+		}
+		text := CleanText(nodeText(node), 600)
+		if len([]rune(text)) < 18 {
+			return
+		}
+		if _, exists := seen[text]; exists {
+			return
+		}
+		seen[text] = struct{}{}
+		paragraphs = append(paragraphs, text)
+	})
+	if len(paragraphs) > 0 {
+		metadata.Content = CleanText(strings.Join(paragraphs, "\n\n"), 7000)
+		if metadata.Summary == "" {
+			metadata.Summary = CleanText(paragraphs[0], 300)
+		}
+	}
+	return metadata
 }
 
 func parseYicaiTime(value string) time.Time {

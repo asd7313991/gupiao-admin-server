@@ -226,6 +226,17 @@ func seedDefaultNewsSources(db *gorm.DB) error {
 			RateLimit:       20,
 			ConfigJSON:      `{"adapter":"sina_finance","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":4194304}`,
 		},
+		{
+			Name:            "第一财经热门",
+			SourceType:      "api",
+			BaseURL:         "https://www.yicai.com/api/ajax/getjuhelist?action=hot",
+			CategoryMapping: `{"A股":"A_SHARE","海外市场频道":"US_STOCK","产经":"INDUSTRY","地产":"FINANCE"}`,
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  15,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"yicai_hot","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":2097152}`,
+		},
 	}
 	for _, source := range defaultSources {
 		var existing NewsSource

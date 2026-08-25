@@ -83,9 +83,14 @@ func (adapter SinaFinanceAdapter) Fetch(ctx context.Context, source SourceReader
 			return
 		}
 		seen[key] = struct{}{}
+		metadata := fetchSinaArticleMetadata(ctx, client, link, timeout)
 		coverImageURL := firstImageIn(node, link)
 		if coverImageURL == "" {
-			coverImageURL = fetchSinaCoverImage(ctx, client, link, timeout)
+			coverImageURL = metadata.CoverImageURL
+		}
+		summary := metadata.Summary
+		if summary == "" {
+			summary = title
 		}
 		result = append(result, NormalizedNews{
 			SourceName:     source.GetName(),
@@ -93,8 +98,8 @@ func (adapter SinaFinanceAdapter) Fetch(ctx context.Context, source SourceReader
 			SourceURL:      link,
 			CoverImageURL:  coverImageURL,
 			Title:          title,
-			Summary:        title,
-			Content:        title,
+			Summary:        summary,
+			Content:        summary,
 			Category:       category,
 			ContentType:    ContentTypeArticle,
 			PublishedAt:    time.Now().UTC(),
@@ -188,12 +193,17 @@ func firstImageIn(node *html.Node, base string) string {
 	return image
 }
 
-func fetchSinaCoverImage(ctx context.Context, client *http.Client, link string, timeout time.Duration) string {
+type sinaArticleMetadata struct {
+	CoverImageURL string
+	Summary       string
+}
+
+func fetchSinaArticleMetadata(ctx context.Context, client *http.Client, link string, timeout time.Duration) sinaArticleMetadata {
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, link, nil)
 	if err != nil {
-		return ""
+		return sinaArticleMetadata{}
 	}
 	request.Header.Set("User-Agent", "stock-news-collector/1.0 (+compliance)")
 	response, err := client.Do(request)
@@ -201,34 +211,36 @@ func fetchSinaCoverImage(ctx context.Context, client *http.Client, link string, 
 		if response != nil {
 			response.Body.Close()
 		}
-		return ""
+		return sinaArticleMetadata{}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 512*1024))
 	if err != nil {
-		return ""
+		return sinaArticleMetadata{}
 	}
 	root, err := html.Parse(strings.NewReader(string(body)))
 	if err != nil {
-		return ""
+		return sinaArticleMetadata{}
 	}
-	image := ""
+	metadata := sinaArticleMetadata{}
 	walkHTML(root, func(node *html.Node) {
-		if image != "" || node.Type != html.ElementNode || node.Data != "meta" {
+		if node.Type != html.ElementNode || node.Data != "meta" {
 			return
 		}
 		property := strings.ToLower(attr(node, "property"))
 		name := strings.ToLower(attr(node, "name"))
-		if property != "og:image" && name != "og:image" {
-			return
-		}
 		value := strings.TrimSpace(attr(node, "content"))
-		if strings.HasPrefix(value, "//") {
-			value = "https:" + value
+		if (property == "og:image" || name == "og:image") && metadata.CoverImageURL == "" {
+			if strings.HasPrefix(value, "//") {
+				value = "https:" + value
+			}
+			if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+				metadata.CoverImageURL = value
+			}
 		}
-		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-			image = value
+		if (name == "description" || property == "og:description") && metadata.Summary == "" {
+			metadata.Summary = CleanText(value, 90)
 		}
 	})
-	return image
+	return metadata
 }

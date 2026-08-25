@@ -27,6 +27,7 @@ func NewCollectionService(db *gorm.DB) *CollectionService {
 	}
 	service.RegisterAdapter(GovCNPushInfoAdapter{})
 	service.RegisterAdapter(SinaFinanceAdapter{})
+	service.RegisterAdapter(YicaiHotAdapter{})
 	return service
 }
 

@@ -1,6 +1,7 @@
 package system
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -203,26 +204,43 @@ func migrateData(db *gorm.DB) error {
 }
 
 func seedDefaultNewsSources(db *gorm.DB) error {
-	var count int64
-	if err := db.Model(&NewsSource{}).Count(&count).Error; err != nil {
-		return err
+	defaultSources := []NewsSource{
+		{
+			Name:            "国务院政策发布",
+			SourceType:      "api",
+			BaseURL:         "https://www.gov.cn/pushinfo/v150203/pushinfo.json",
+			CategoryMapping: `{"政策":"POLICY","财经":"FINANCE","经济":"ECONOMY"}`,
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  10,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"gov_cn_pushinfo","category":"POLICY","include_content":false,"max_items":40,"request_timeout_ms":10000,"max_response_bytes":2097152}`,
+		},
+		{
+			Name:            "新浪财经",
+			SourceType:      "html",
+			BaseURL:         "https://finance.sina.com.cn/",
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  15,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"sina_finance","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":4194304}`,
+		},
 	}
-	if count > 0 {
-		return nil
+	for _, source := range defaultSources {
+		var existing NewsSource
+		err := db.Where("name = ?", source.Name).First(&existing).Error
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := db.Create(&source).Error; err != nil {
+			return err
+		}
 	}
-
-	defaultSource := NewsSource{
-		Name:            "国务院政策发布",
-		SourceType:      "api",
-		BaseURL:         "https://www.gov.cn/pushinfo/v150203/pushinfo.json",
-		CategoryMapping: `{"政策":"POLICY","财经":"FINANCE","经济":"ECONOMY"}`,
-		Enabled:         true,
-		IntervalSeconds: 600,
-		TimeoutSeconds:  10,
-		RateLimit:       20,
-		ConfigJSON:      `{"adapter":"gov_cn_pushinfo","category":"POLICY","include_content":false,"max_items":40,"request_timeout_ms":10000,"max_response_bytes":2097152}`,
-	}
-	return db.Create(&defaultSource).Error
+	return nil
 }
 
 func seedDefaultArticles(db *gorm.DB) error {

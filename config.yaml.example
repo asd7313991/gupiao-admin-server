@@ -70,3 +70,10 @@ face_recognition:
   scene_id: 0
   return_url: "http://localhost:5173/verification?face_return=1"
   storage_dir: "private/verification"
+
+news:
+  collection_enabled: true
+  collection_cron: "*/10 * * * *"
+  request_timeout_ms: 10000
+  max_retries: 3
+  default_language: "zh-CN"

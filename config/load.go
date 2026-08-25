@@ -111,6 +111,13 @@ func setDefaults() {
 	v.SetDefault("face_recognition.scene_id", 0)
 	v.SetDefault("face_recognition.return_url", "")
 	v.SetDefault("face_recognition.storage_dir", "private/verification")
+
+	// news collection
+	v.SetDefault("news.collection_enabled", true)
+	v.SetDefault("news.collection_cron", "*/10 * * * *")
+	v.SetDefault("news.request_timeout_ms", 10000)
+	v.SetDefault("news.max_retries", 3)
+	v.SetDefault("news.default_language", "zh-CN")
 }
 
 func applyConfig() error {
@@ -212,6 +219,12 @@ func applyConfig() error {
 	if VerificationStorageDir != "" && !filepath.IsAbs(VerificationStorageDir) {
 		VerificationStorageDir = filepath.Join(AbsPath, VerificationStorageDir)
 	}
+
+	NewsCollectionEnabled = v.GetBool("news.collection_enabled")
+	NewsCollectionCron = v.GetString("news.collection_cron")
+	NewsRequestTimeoutMS = v.GetInt("news.request_timeout_ms")
+	NewsMaxRetries = v.GetInt("news.max_retries")
+	NewsDefaultLanguage = v.GetString("news.default_language")
 
 	return nil
 }

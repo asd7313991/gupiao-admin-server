@@ -6,6 +6,7 @@ import (
 	"api-server/api/app/v1/private/admin/platform/customer"
 	platformFinance "api-server/api/app/v1/private/admin/platform/finance"
 	platformMenu "api-server/api/app/v1/private/admin/platform/menu"
+	platformNews "api-server/api/app/v1/private/admin/platform/news"
 	platformRole "api-server/api/app/v1/private/admin/platform/role"
 	platformSetting "api-server/api/app/v1/private/admin/platform/setting"
 	platformStock "api-server/api/app/v1/private/admin/platform/stock"
@@ -122,6 +123,19 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	settingGroup.PUT("/articles", platformSetting.SaveArticle)
 	settingGroup.DELETE("/articles", platformSetting.DeleteArticle)
 	settingGroup.PUT("/articles/status", platformSetting.UpdateArticleStatus)
+
+	newsGroup := group.Group("/news", middleware.PlatformMenuAccess)
+	newsGroup.GET("", platformNews.ListNews)
+	newsGroup.GET("/:id", platformNews.GetNews)
+	newsGroup.PUT("", platformNews.UpdateNews)
+	newsGroup.DELETE("", platformNews.DeleteNews)
+	newsGroup.POST("/batch-action", platformNews.BatchAction)
+	newsGroup.GET("/sources", platformNews.ListSources)
+	newsGroup.POST("/sources", platformNews.CreateSource)
+	newsGroup.PUT("/sources", platformNews.UpdateSource)
+	newsGroup.DELETE("/sources", platformNews.DeleteSource)
+	newsGroup.POST("/collect", platformNews.CollectNews)
+	newsGroup.GET("/collect-logs", platformNews.ListCollectLogs)
 
 	stockGroup := group.Group("/stock", middleware.PlatformMenuAccess)
 	stockGroup.GET("/securities", platformStock.List)

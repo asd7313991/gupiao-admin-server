@@ -81,6 +81,12 @@ var (
 	FaceRecognitionSceneID         int64
 	FaceRecognitionReturnURL       string
 	VerificationStorageDir         string
+	// news collection
+	NewsCollectionEnabled bool
+	NewsCollectionCron    string
+	NewsRequestTimeoutMS  int
+	NewsMaxRetries        int
+	NewsDefaultLanguage   string
 )
 
 // page config

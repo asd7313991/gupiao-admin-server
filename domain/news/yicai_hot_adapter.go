@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -137,6 +138,10 @@ type yicaiArticleMetadata struct {
 	CoverImageURL string
 }
 
+var yicaiSharePrefixPattern = regexp.MustCompile(`^打开微信[，,].*?朋友圈。`)
+var yicaiLeadMetaPattern = regexp.MustCompile(`^第一财经\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*`)
+var yicaiSubscriptionTailPattern = regexp.MustCompile(`(?:【\s*推荐订阅\s*】|\[\s*推荐订阅\s*\])[\s\S]*$`)
+
 func normalizeYicaiURL(raw string) string {
 	base, _ := url.Parse("https://www.yicai.com")
 	parsed, err := url.Parse(strings.TrimSpace(raw))
@@ -198,7 +203,7 @@ func fetchYicaiArticleMetadata(ctx context.Context, client *http.Client, link st
 			}
 		}
 		if (name == "description" || property == "og:description") && metadata.Summary == "" {
-			metadata.Summary = CleanText(value, 300)
+			metadata.Summary = cleanYicaiNoise(value, 300)
 		}
 	})
 
@@ -208,8 +213,11 @@ func fetchYicaiArticleMetadata(ctx context.Context, client *http.Client, link st
 		if node.Type != html.ElementNode || node.Data != "p" {
 			return
 		}
-		text := CleanText(nodeText(node), 600)
+		text := cleanYicaiNoise(nodeText(node), 600)
 		if len([]rune(text)) < 18 {
+			return
+		}
+		if isYicaiNoiseParagraph(text) {
 			return
 		}
 		if _, exists := seen[text]; exists {
@@ -219,12 +227,41 @@ func fetchYicaiArticleMetadata(ctx context.Context, client *http.Client, link st
 		paragraphs = append(paragraphs, text)
 	})
 	if len(paragraphs) > 0 {
-		metadata.Content = CleanText(strings.Join(paragraphs, "\n\n"), 7000)
+		metadata.Content = cleanYicaiNoise(strings.Join(paragraphs, "\n\n"), 7000)
 		if metadata.Summary == "" {
-			metadata.Summary = CleanText(paragraphs[0], 300)
+			metadata.Summary = cleanYicaiNoise(paragraphs[0], 300)
 		}
 	}
+	if metadata.Summary != "" {
+		metadata.Summary = cleanYicaiNoise(metadata.Summary, 300)
+	}
 	return metadata
+}
+
+func cleanYicaiNoise(input string, maxLen int) string {
+	text := CleanText(input, maxLen)
+	if text == "" {
+		return ""
+	}
+	text = yicaiSharePrefixPattern.ReplaceAllString(text, "")
+	text = yicaiLeadMetaPattern.ReplaceAllString(text, "")
+	text = yicaiSubscriptionTailPattern.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	return CleanText(text, maxLen)
+}
+
+func isYicaiNoiseParagraph(input string) bool {
+	plain := strings.ReplaceAll(strings.TrimSpace(input), " ", "")
+	if plain == "" {
+		return true
+	}
+	noiseKeywords := []string{"推荐订阅", "公告臻选", "告别信息过载", "捕捉每天公告中的"}
+	for _, keyword := range noiseKeywords {
+		if strings.Contains(plain, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseYicaiTime(value string) time.Time {

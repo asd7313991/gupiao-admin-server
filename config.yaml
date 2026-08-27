@@ -1,3 +1,10 @@
+face_recognition:
+  enabled: true
+  api_key: "yehaL3syj5CvaYAOUFxqjf2B"
+  secret_key: "C5nNq3UB0HxiCStU4BDTe5wmsC43FhKe"
+  endpoint: "https://aip.baidubce.com"
+  score_threshold: 80
+  storage_dir: "private/verification"
 # Configuration file for the admin server
 server:
   port: 8080

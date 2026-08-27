@@ -61,14 +61,13 @@ tenant:
   min_query_length: 3
   default_code: "platform"
 
-# 阿里云金融级实人认证。生产环境请使用 HTTP_SERVICES_FACE_RECOGNITION_* 环境变量注入凭据。
+# 百度人脸实名认证 V3。生产环境请使用 HTTP_SERVICES_FACE_RECOGNITION_* 环境变量注入凭据。
 face_recognition:
   enabled: false
-  access_key_id: ""
-  access_key_secret: ""
-  endpoint: "cloudauth.cn-shanghai.aliyuncs.com"
-  scene_id: 0
-  return_url: "http://localhost:5173/verification?face_return=1"
+  api_key: ""
+  secret_key: ""
+  endpoint: "https://aip.baidubce.com"
+  score_threshold: 80
   storage_dir: "private/verification"
 
 news:

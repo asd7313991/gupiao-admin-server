@@ -105,11 +105,10 @@ func setDefaults() {
 
 	// face recognition
 	v.SetDefault("face_recognition.enabled", false)
-	v.SetDefault("face_recognition.access_key_id", "")
-	v.SetDefault("face_recognition.access_key_secret", "")
-	v.SetDefault("face_recognition.endpoint", "cloudauth.cn-shanghai.aliyuncs.com")
-	v.SetDefault("face_recognition.scene_id", 0)
-	v.SetDefault("face_recognition.return_url", "")
+	v.SetDefault("face_recognition.api_key", "")
+	v.SetDefault("face_recognition.secret_key", "")
+	v.SetDefault("face_recognition.endpoint", "https://aip.baidubce.com")
+	v.SetDefault("face_recognition.score_threshold", 80)
 	v.SetDefault("face_recognition.storage_dir", "private/verification")
 
 	// news collection
@@ -210,11 +209,10 @@ func applyConfig() error {
 	}
 
 	FaceRecognitionEnabled = v.GetBool("face_recognition.enabled")
-	FaceRecognitionAccessKeyID = v.GetString("face_recognition.access_key_id")
-	FaceRecognitionAccessKeySecret = v.GetString("face_recognition.access_key_secret")
+	FaceRecognitionAPIKey = v.GetString("face_recognition.api_key")
+	FaceRecognitionSecretKey = v.GetString("face_recognition.secret_key")
 	FaceRecognitionEndpoint = v.GetString("face_recognition.endpoint")
-	FaceRecognitionSceneID = v.GetInt64("face_recognition.scene_id")
-	FaceRecognitionReturnURL = v.GetString("face_recognition.return_url")
+	FaceRecognitionScoreThreshold = v.GetFloat64("face_recognition.score_threshold")
 	VerificationStorageDir = v.GetString("face_recognition.storage_dir")
 	if VerificationStorageDir != "" && !filepath.IsAbs(VerificationStorageDir) {
 		VerificationStorageDir = filepath.Join(AbsPath, VerificationStorageDir)

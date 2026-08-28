@@ -32,6 +32,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	account.PUT("/profile/login-password", UpdateLoginPassword)
 	account.GET("/verification/status", VerificationStatus)
 	account.POST("/verification/material", UploadVerificationMaterial)
+	account.PUT("/verification/identity", SaveVerificationIdentity)
 	account.PUT("/verification/profile", SaveVerificationProfile)
 	account.PUT("/verification/bank-card", UpdateVerificationBankCard)
 	account.PUT("/verification/trade-password", UpdateVerificationTradePassword)

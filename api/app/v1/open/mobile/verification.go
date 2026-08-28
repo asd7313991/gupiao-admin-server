@@ -107,6 +107,10 @@ func UploadVerificationMaterial(c *gin.Context) {
 	if kind == "back" {
 		field = "id_card_back"
 	}
+	var extractedName, extractedIDCard string
+	if kind == "front" && faceRecognitionConfigured() {
+		extractedName, extractedIDCard, _ = extractIDCard(path)
+	}
 	var previous string
 	var customer system.Customer
 	if err := pgdb.GetClient().First(&customer, customerID).Error; err != nil {
@@ -119,7 +123,11 @@ func UploadVerificationMaterial(c *gin.Context) {
 	} else {
 		previous = customer.IDCardBack
 	}
-	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}).Error; err != nil {
+	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
+	if extractedName != "" && extractedIDCard != "" {
+		updates["name"], updates["id_card"] = extractedName, extractedIDCard
+	}
+	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
 		_ = os.Remove(path)
 		response.ReturnError(c, response.DATA_LOSS, "保存材料记录失败")
 		return
@@ -127,7 +135,12 @@ func UploadVerificationMaterial(c *gin.Context) {
 	if previous != "" && previous != path && strings.HasPrefix(previous, config.VerificationStorageDir) {
 		_ = os.Remove(previous)
 	}
-	response.ReturnData(c, gin.H{"uploaded": true, "kind": kind})
+	result := gin.H{"uploaded": true, "kind": kind}
+	if extractedName != "" && extractedIDCard != "" {
+		result["name"] = extractedName
+		result["id_card"] = extractedIDCard
+	}
+	response.ReturnData(c, result)
 }
 
 func SaveVerificationProfile(c *gin.Context) {
@@ -165,6 +178,36 @@ func SaveVerificationProfile(c *gin.Context) {
 	updates := map[string]any{"name": input.Name, "id_card": strings.ToUpper(input.IDCard), "bank_name": input.BankName, "bank_card": input.BankCard, "trade_password": hash, "verified": system.StatusDisabled, "verification_certify_id": "", "verification_remark": ""}
 	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", middleware.GetCurrentCustomerID(c)).Updates(updates).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存开户资料失败")
+		return
+	}
+	response.ReturnData(c, nil)
+}
+
+func SaveVerificationIdentity(c *gin.Context) {
+	var input struct {
+		Name   string `json:"name"`
+		IDCard string `json:"id_card"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "身份资料格式无效")
+		return
+	}
+	input.Name, input.IDCard = strings.TrimSpace(input.Name), strings.ToUpper(strings.TrimSpace(input.IDCard))
+	if input.Name == "" || !idCardPattern.MatchString(input.IDCard) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请输入正确的姓名和身份证号")
+		return
+	}
+	var customer system.Customer
+	if err := pgdb.GetClient().First(&customer, middleware.GetCurrentCustomerID(c)).Error; err != nil {
+		response.ReturnError(c, response.NOT_FOUND, "用户不存在")
+		return
+	}
+	if customer.IDCardFront == "" || customer.IDCardBack == "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面")
+		return
+	}
+	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "保存身份资料失败")
 		return
 	}
 	response.ReturnData(c, nil)
@@ -247,8 +290,8 @@ func StartFaceVerification(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if item.Name == "" || item.IDCard == "" || item.BankCard == "" || item.TradePassword == "" || item.IDCardFront == "" || item.IDCardBack == "" {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "请先完成身份、证件、银行卡和交易密码资料")
+	if item.Name == "" || item.IDCard == "" || item.IDCardFront == "" || item.IDCardBack == "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面并完成身份信息提取")
 		return
 	}
 	file, err := c.FormFile("file")
@@ -358,6 +401,47 @@ func baiduAccessToken() (string, error) {
 		return "", fmt.Errorf("invalid access token response")
 	}
 	return token.AccessToken, nil
+}
+
+func extractIDCard(path string) (string, string, error) {
+	image, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	token, err := baiduAccessToken()
+	if err != nil {
+		return "", "", err
+	}
+	body, err := json.Marshal(map[string]string{
+		"image": base64.StdEncoding.EncodeToString(image), "id_card_side": "front",
+	})
+	if err != nil {
+		return "", "", err
+	}
+	requestURL := strings.TrimRight(config.FaceRecognitionEndpoint, "/") + "/rest/2.0/ocr/v1/idcard?access_token=" + url.QueryEscape(token)
+	request, err := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(string(body)))
+	if err != nil {
+		return "", "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	result, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", "", err
+	}
+	defer result.Body.Close()
+	var ocr struct {
+		ErrorCode int `json:"error_code"`
+		WordsResult map[string]struct{ Words string `json:"words"` } `json:"words_result"`
+	}
+	if err := json.NewDecoder(result.Body).Decode(&ocr); err != nil || ocr.ErrorCode != 0 {
+		return "", "", fmt.Errorf("百度身份证识别失败")
+	}
+	name := strings.TrimSpace(ocr.WordsResult["姓名"].Words)
+	idCard := strings.ToUpper(strings.TrimSpace(ocr.WordsResult["公民身份号码"].Words))
+	if name == "" || !idCardPattern.MatchString(idCard) {
+		return "", "", fmt.Errorf("未能提取有效身份证信息")
+	}
+	return name, idCard, nil
 }
 
 func randomToken(size int) (string, error) {

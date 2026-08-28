@@ -107,10 +107,6 @@ func UploadVerificationMaterial(c *gin.Context) {
 	if kind == "back" {
 		field = "id_card_back"
 	}
-	var extractedName, extractedIDCard string
-	if kind == "front" && faceRecognitionConfigured() {
-		extractedName, extractedIDCard, _ = extractIDCard(path)
-	}
 	var previous string
 	var customer system.Customer
 	if err := pgdb.GetClient().First(&customer, customerID).Error; err != nil {
@@ -124,9 +120,6 @@ func UploadVerificationMaterial(c *gin.Context) {
 		previous = customer.IDCardBack
 	}
 	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
-	if extractedName != "" && extractedIDCard != "" {
-		updates["name"], updates["id_card"] = extractedName, extractedIDCard
-	}
 	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
 		_ = os.Remove(path)
 		response.ReturnError(c, response.DATA_LOSS, "保存材料记录失败")
@@ -135,12 +128,7 @@ func UploadVerificationMaterial(c *gin.Context) {
 	if previous != "" && previous != path && strings.HasPrefix(previous, config.VerificationStorageDir) {
 		_ = os.Remove(previous)
 	}
-	result := gin.H{"uploaded": true, "kind": kind}
-	if extractedName != "" && extractedIDCard != "" {
-		result["name"] = extractedName
-		result["id_card"] = extractedIDCard
-	}
-	response.ReturnData(c, result)
+	response.ReturnData(c, gin.H{"uploaded": true, "kind": kind})
 }
 
 func SaveVerificationProfile(c *gin.Context) {

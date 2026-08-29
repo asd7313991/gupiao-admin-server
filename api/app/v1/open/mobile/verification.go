@@ -2,18 +2,19 @@ package mobile
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
-	cloudauth "github.com/alibabacloud-go/cloudauth-20190307/v3/client"
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
-	"github.com/alibabacloud-go/tea/tea"
 	"github.com/gin-gonic/gin"
 
 	"api-server/api/middleware"
@@ -118,7 +119,8 @@ func UploadVerificationMaterial(c *gin.Context) {
 	} else {
 		previous = customer.IDCardBack
 	}
-	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}).Error; err != nil {
+	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
+	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
 		_ = os.Remove(path)
 		response.ReturnError(c, response.DATA_LOSS, "保存材料记录失败")
 		return
@@ -164,6 +166,36 @@ func SaveVerificationProfile(c *gin.Context) {
 	updates := map[string]any{"name": input.Name, "id_card": strings.ToUpper(input.IDCard), "bank_name": input.BankName, "bank_card": input.BankCard, "trade_password": hash, "verified": system.StatusDisabled, "verification_certify_id": "", "verification_remark": ""}
 	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", middleware.GetCurrentCustomerID(c)).Updates(updates).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存开户资料失败")
+		return
+	}
+	response.ReturnData(c, nil)
+}
+
+func SaveVerificationIdentity(c *gin.Context) {
+	var input struct {
+		Name   string `json:"name"`
+		IDCard string `json:"id_card"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "身份资料格式无效")
+		return
+	}
+	input.Name, input.IDCard = strings.TrimSpace(input.Name), strings.ToUpper(strings.TrimSpace(input.IDCard))
+	if input.Name == "" || !idCardPattern.MatchString(input.IDCard) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请输入正确的姓名和身份证号")
+		return
+	}
+	var customer system.Customer
+	if err := pgdb.GetClient().First(&customer, middleware.GetCurrentCustomerID(c)).Error; err != nil {
+		response.ReturnError(c, response.NOT_FOUND, "用户不存在")
+		return
+	}
+	if customer.IDCardFront == "" || customer.IDCardBack == "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面")
+		return
+	}
+	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "保存身份资料失败")
 		return
 	}
 	response.ReturnData(c, nil)
@@ -239,40 +271,78 @@ func UpdateVerificationTradePassword(c *gin.Context) {
 
 func StartFaceVerification(c *gin.Context) {
 	if !faceRecognitionConfigured() {
-		response.ReturnError(c, response.UNAVAILABLE, "阿里云人脸核身服务未配置")
+		response.ReturnError(c, response.UNAVAILABLE, "百度云人脸实名认证服务未配置")
 		return
 	}
 	item, ok := currentVerificationCustomer(c)
 	if !ok {
 		return
 	}
-	if item.Name == "" || item.IDCard == "" || item.BankCard == "" || item.TradePassword == "" || item.IDCardFront == "" || item.IDCardBack == "" {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "请先完成身份、证件、银行卡和交易密码资料")
+	if item.Name == "" || item.IDCard == "" || item.IDCardFront == "" || item.IDCardBack == "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面并完成身份信息提取")
 		return
 	}
-	client, err := newFaceClient()
+	file, err := c.FormFile("file")
+	if err != nil || file.Size <= 0 || file.Size > 2*1024*1024 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择不超过 2MB 的本人正面照片")
+		return
+	}
+	source, err := file.Open()
 	if err != nil {
-		response.ReturnError(c, response.UNAVAILABLE, "初始化人脸核身服务失败")
+		response.ReturnError(c, response.INVALID_ARGUMENT, "读取人脸照片失败")
 		return
 	}
-	orderToken, _ := randomToken(12)
-	request := &cloudauth.InitFaceVerifyRequest{
-		SceneId: tea.Int64(config.FaceRecognitionSceneID), OuterOrderNo: tea.String(fmt.Sprintf("customer-%d-%s", item.ID, orderToken)),
-		ProductCode: tea.String("ID_PRO"), Model: tea.String("LIVENESS"), CertType: tea.String("IDENTITY_CARD"),
-		CertName: tea.String(item.Name), CertNo: tea.String(item.IDCard), ReturnUrl: tea.String(config.FaceRecognitionReturnURL),
-		Mobile: tea.String(item.Phone), Ip: tea.String(c.ClientIP()),
-	}
-	result, err := client.InitFaceVerify(request)
-	if err != nil || result == nil || result.Body == nil || result.Body.Code == nil || *result.Body.Code != "200" || result.Body.ResultObject == nil || result.Body.ResultObject.CertifyId == nil || result.Body.ResultObject.CertifyUrl == nil {
-		response.ReturnError(c, response.UNAVAILABLE, "创建人脸核身任务失败")
+	defer source.Close()
+	image, err := io.ReadAll(io.LimitReader(source, 2*1024*1024+1))
+	if err != nil || len(image) == 0 || len(image) > 2*1024*1024 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "读取人脸照片失败")
 		return
 	}
-	certifyID := *result.Body.ResultObject.CertifyId
-	if err := pgdb.GetClient().Model(&item).Updates(map[string]any{"verification_certify_id": certifyID, "verified": verificationPending, "verification_remark": "等待人脸核身"}).Error; err != nil {
-		response.ReturnError(c, response.DATA_LOSS, "保存核身任务失败")
+	contentType := http.DetectContentType(image)
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/bmp" {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "仅支持 JPG、PNG 或 BMP 人脸照片")
 		return
 	}
-	response.ReturnData(c, gin.H{"certify_url": *result.Body.ResultObject.CertifyUrl})
+	token, err := baiduAccessToken()
+	if err != nil {
+		response.ReturnError(c, response.UNAVAILABLE, "获取百度云访问令牌失败")
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"image": base64.StdEncoding.EncodeToString(image), "image_type": "BASE64",
+		"id_card_number": item.IDCard, "name": item.Name,
+		"quality_control": "HIGH", "liveness_control": "HIGH", "spoofing_control": "NORMAL",
+	})
+	requestURL := strings.TrimRight(config.FaceRecognitionEndpoint, "/") + "/rest/2.0/face/v3/person/verify?access_token=" + url.QueryEscape(token)
+	request, _ := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(string(body)))
+	request.Header.Set("Content-Type", "application/json")
+	result, err := http.DefaultClient.Do(request)
+	if err != nil || result == nil {
+		response.ReturnError(c, response.UNAVAILABLE, "调用百度云人脸实名认证失败")
+		return
+	}
+	defer result.Body.Close()
+	var verification struct {
+		ErrorCode int    `json:"error_code"`
+		ErrorMsg  string `json:"error_msg"`
+		Result    struct {
+			Score float64 `json:"score"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(result.Body).Decode(&verification); err != nil || verification.ErrorCode != 0 {
+		response.ReturnError(c, response.UNAVAILABLE, "百度云实名认证失败: "+verification.ErrorMsg)
+		return
+	}
+	passed := verification.Result.Score >= config.FaceRecognitionScoreThreshold
+	status, remark := verificationPending, fmt.Sprintf("人脸相似度 %.2f，未达到认证阈值", verification.Result.Score)
+	if passed {
+		status, remark = system.StatusEnabled, ""
+	}
+	if err := pgdb.GetClient().Model(&item).Updates(map[string]any{"verification_certify_id": fmt.Sprintf("baidu:%.2f", verification.Result.Score), "verified": status, "verification_remark": remark}).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "保存认证结果失败")
+		return
+	}
+	response.ReturnData(c, gin.H{"passed": passed, "verified": status, "score": verification.Result.Score})
 }
 
 func ConfirmFaceVerification(c *gin.Context) {
@@ -284,26 +354,11 @@ func ConfirmFaceVerification(c *gin.Context) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, "尚未发起人脸核身")
 		return
 	}
-	client, err := newFaceClient()
-	if err != nil {
-		response.ReturnError(c, response.UNAVAILABLE, "初始化人脸核身服务失败")
+	if !strings.HasPrefix(item.VerificationCertifyID, "baidu:") {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "认证任务不是百度云认证任务")
 		return
 	}
-	result, err := client.DescribeFaceVerify(&cloudauth.DescribeFaceVerifyRequest{SceneId: tea.Int64(config.FaceRecognitionSceneID), CertifyId: tea.String(item.VerificationCertifyID)})
-	if err != nil || result == nil || result.Body == nil || result.Body.ResultObject == nil {
-		response.ReturnError(c, response.UNAVAILABLE, "查询人脸核身结果失败")
-		return
-	}
-	passed := result.Body.ResultObject.Passed != nil && *result.Body.ResultObject.Passed == "T"
-	status, remark := verificationPending, "人脸核身尚未通过"
-	if passed {
-		status, remark = system.StatusEnabled, ""
-	}
-	if err := pgdb.GetClient().Model(&item).Updates(map[string]any{"verified": status, "verification_remark": remark}).Error; err != nil {
-		response.ReturnError(c, response.DATA_LOSS, "更新认证状态失败")
-		return
-	}
-	response.ReturnData(c, gin.H{"passed": passed, "verified": status})
+	response.ReturnData(c, gin.H{"passed": item.Verified == system.StatusEnabled, "verified": item.Verified})
 }
 
 func currentVerificationCustomer(c *gin.Context) (system.Customer, bool) {
@@ -316,12 +371,65 @@ func currentVerificationCustomer(c *gin.Context) (system.Customer, bool) {
 }
 
 func faceRecognitionConfigured() bool {
-	return config.FaceRecognitionEnabled && config.FaceRecognitionAccessKeyID != "" && config.FaceRecognitionAccessKeySecret != "" && config.FaceRecognitionSceneID > 0 && config.FaceRecognitionReturnURL != ""
+	return config.FaceRecognitionEnabled && config.FaceRecognitionAPIKey != "" && config.FaceRecognitionSecretKey != ""
 }
 
-func newFaceClient() (*cloudauth.Client, error) {
-	clientConfig := &openapi.Config{AccessKeyId: tea.String(config.FaceRecognitionAccessKeyID), AccessKeySecret: tea.String(config.FaceRecognitionAccessKeySecret), Endpoint: tea.String(config.FaceRecognitionEndpoint)}
-	return cloudauth.NewClient(clientConfig)
+func baiduAccessToken() (string, error) {
+	endpoint := "https://aip.baidubce.com/oauth/2.0/token"
+	form := url.Values{"grant_type": {"client_credentials"}, "client_id": {config.FaceRecognitionAPIKey}, "client_secret": {config.FaceRecognitionSecretKey}}
+	result, err := http.PostForm(endpoint, form)
+	if err != nil {
+		return "", err
+	}
+	defer result.Body.Close()
+	var token struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(result.Body).Decode(&token); err != nil || token.AccessToken == "" {
+		return "", fmt.Errorf("invalid access token response")
+	}
+	return token.AccessToken, nil
+}
+
+func extractIDCard(path string) (string, string, error) {
+	image, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	token, err := baiduAccessToken()
+	if err != nil {
+		return "", "", err
+	}
+	body, err := json.Marshal(map[string]string{
+		"image": base64.StdEncoding.EncodeToString(image), "id_card_side": "front",
+	})
+	if err != nil {
+		return "", "", err
+	}
+	requestURL := strings.TrimRight(config.FaceRecognitionEndpoint, "/") + "/rest/2.0/ocr/v1/idcard?access_token=" + url.QueryEscape(token)
+	request, err := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(string(body)))
+	if err != nil {
+		return "", "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	result, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", "", err
+	}
+	defer result.Body.Close()
+	var ocr struct {
+		ErrorCode int `json:"error_code"`
+		WordsResult map[string]struct{ Words string `json:"words"` } `json:"words_result"`
+	}
+	if err := json.NewDecoder(result.Body).Decode(&ocr); err != nil || ocr.ErrorCode != 0 {
+		return "", "", fmt.Errorf("百度身份证识别失败")
+	}
+	name := strings.TrimSpace(ocr.WordsResult["姓名"].Words)
+	idCard := strings.ToUpper(strings.TrimSpace(ocr.WordsResult["公民身份号码"].Words))
+	if name == "" || !idCardPattern.MatchString(idCard) {
+		return "", "", fmt.Errorf("未能提取有效身份证信息")
+	}
+	return name, idCard, nil
 }
 
 func randomToken(size int) (string, error) {

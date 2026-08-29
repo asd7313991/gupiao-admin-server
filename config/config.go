@@ -73,14 +73,19 @@ var (
 	// tenant config
 	TenantMinQueryLength int
 	DefaultTenantCode    string
-	// aliyun financial-grade real-person verification
-	FaceRecognitionEnabled         bool
-	FaceRecognitionAccessKeyID     string
-	FaceRecognitionAccessKeySecret string
-	FaceRecognitionEndpoint        string
-	FaceRecognitionSceneID         int64
-	FaceRecognitionReturnURL       string
-	VerificationStorageDir         string
+	// baidu face real-name verification
+	FaceRecognitionEnabled        bool
+	FaceRecognitionAPIKey         string
+	FaceRecognitionSecretKey      string
+	FaceRecognitionEndpoint       string
+	FaceRecognitionScoreThreshold float64
+	VerificationStorageDir        string
+	// news collection
+	NewsCollectionEnabled bool
+	NewsCollectionCron    string
+	NewsRequestTimeoutMS  int
+	NewsMaxRetries        int
+	NewsDefaultLanguage   string
 )
 
 // page config

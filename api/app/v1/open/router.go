@@ -14,4 +14,8 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	}
 	health.RegisterOpenRoutes(open)
 	mobile.RegisterRoutes(open)
+	open.GET("/news", mobile.ListNews)
+	open.GET("/news/categories", mobile.ListNewsCategories)
+	open.GET("/news/:id", mobile.GetNewsByID)
+	open.GET("/securities/:code/news", mobile.ListSecurityNews)
 }

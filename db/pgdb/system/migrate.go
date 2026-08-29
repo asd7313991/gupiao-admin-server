@@ -1,6 +1,7 @@
 package system
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 
 func migrateTable(db *gorm.DB) error {
 	err := db.AutoMigrate(
+		&NewsSource{},
+		&NewsCollectLog{},
+		&FinanceNews{},
+		&NewsSecurityRelation{},
+		&NewsKeyword{},
 		&SystemTenant{},
 		&AppSystemSetting{},
 		&AppNotice{},
@@ -68,6 +74,10 @@ func migrateData(db *gorm.DB) error {
 		}
 		if err := seedDefaultArticles(tx); err != nil {
 			zap.L().Error("初始化应用文章失败", zap.Error(err))
+			return err
+		}
+		if err := seedDefaultNewsSources(tx); err != nil {
+			zap.L().Error("初始化新闻源失败", zap.Error(err))
 			return err
 		}
 
@@ -192,6 +202,57 @@ func migrateData(db *gorm.DB) error {
 		return nil
 	})
 	return err
+}
+
+func seedDefaultNewsSources(db *gorm.DB) error {
+	defaultSources := []NewsSource{
+		{
+			Name:            "国务院政策发布",
+			SourceType:      "api",
+			BaseURL:         "https://www.gov.cn/pushinfo/v150203/pushinfo.json",
+			CategoryMapping: `{"政策":"POLICY","财经":"FINANCE","经济":"ECONOMY"}`,
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  10,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"gov_cn_pushinfo","category":"POLICY","include_content":false,"max_items":40,"request_timeout_ms":10000,"max_response_bytes":2097152}`,
+		},
+		{
+			Name:            "新浪财经",
+			SourceType:      "html",
+			BaseURL:         "https://finance.sina.com.cn/",
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  15,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"sina_finance","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":4194304}`,
+		},
+		{
+			Name:            "第一财经热门",
+			SourceType:      "api",
+			BaseURL:         "https://www.yicai.com/api/ajax/getjuhelist?action=hot",
+			CategoryMapping: `{"A股":"A_SHARE","海外市场频道":"US_STOCK","产经":"INDUSTRY","地产":"FINANCE"}`,
+			Enabled:         true,
+			IntervalSeconds: 600,
+			TimeoutSeconds:  15,
+			RateLimit:       20,
+			ConfigJSON:      `{"adapter":"yicai_hot","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":2097152}`,
+		},
+	}
+	for _, source := range defaultSources {
+		var existing NewsSource
+		err := db.Where("name = ?", source.Name).First(&existing).Error
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		if err := db.Create(&source).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func seedDefaultArticles(db *gorm.DB) error {
@@ -351,8 +412,8 @@ func seedFinanceRecords(db *gorm.DB) error {
 	withdrawals := make([]FinanceWithdrawal, 0, len(customers))
 	for index, customer := range customers {
 		amount := float64((index + 1) * 100000)
-		recharges = append(recharges, FinanceRecharge{CustomerID: customer.ID, Amount: amount, Currency: "CNY", Method: "支付宝转账", Status: StatusEnabled, Remark: "后台确认到账", ReviewedAt: time.Now().Add(-time.Duration(index) * time.Hour).Unix()})
-		withdrawals = append(withdrawals, FinanceWithdrawal{CustomerID: customer.ID, Amount: amount / 2, Currency: "CNY", Method: "银行卡", BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, Status: StatusEnabled, ReviewedAt: time.Now().Add(-time.Duration(index) * 2 * time.Hour).Unix()})
+		recharges = append(recharges, FinanceRecharge{RequestID: fmt.Sprintf("seed-recharge-%d", customer.ID), CustomerID: customer.ID, Amount: amount, Currency: "CNY", Method: "支付宝转账", Status: StatusEnabled, Remark: "后台确认到账", ReviewedAt: time.Now().Add(-time.Duration(index) * time.Hour).Unix()})
+		withdrawals = append(withdrawals, FinanceWithdrawal{RequestID: fmt.Sprintf("seed-withdrawal-%d", customer.ID), CustomerID: customer.ID, Amount: amount / 2, Currency: "CNY", Method: "银行卡", BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, Status: StatusEnabled, ReviewedAt: time.Now().Add(-time.Duration(index) * 2 * time.Hour).Unix()})
 	}
 	if err := db.Create(&recharges).Error; err != nil {
 		return err

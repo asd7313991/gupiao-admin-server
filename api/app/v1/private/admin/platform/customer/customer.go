@@ -1,15 +1,20 @@
 package customer
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"time"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
+	"api-server/config"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 )
@@ -41,7 +46,25 @@ type customerResponse struct {
 }
 
 func toResponse(customer system.Customer) customerResponse {
-	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: customer.IDCardFront, IDCardBack: customer.IDCardBack, VerificationVideo: customer.VerificationVideo, VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: customer.VerificationVideo, VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+}
+
+func materialDataURL(path string) string {
+	if path == "" || !filepath.IsAbs(path) {
+		return path
+	}
+	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(config.VerificationStorageDir)+string(os.PathSeparator)) {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	mime := "image/jpeg"
+	if strings.EqualFold(filepath.Ext(path), ".png") {
+		mime = "image/png"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 func List(c *gin.Context) {

@@ -65,6 +65,7 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		ctx.Exit(1)
 	}
+	fmt.Printf("DEBUG PgsqlDSN after LoadConfig: %s\n", config.PgsqlDSN)
 
 	if CLI.Dev {
 		config.RunModel = config.RunModelDevValue

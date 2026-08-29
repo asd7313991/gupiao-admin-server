@@ -23,7 +23,7 @@ func InitCronJobs() {
 	InitUserCacheJob()
 	InitStockSyncJob()
 	InitNewsCollectJob()
-
+	InitLimitOrderMatchJob()
 	// 启动调度器
 	scheduler.Start()
 

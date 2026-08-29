@@ -113,6 +113,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	settingGroup := group.Group("/setting", middleware.PlatformMenuAccess)
 	settingGroup.GET("/system", platformSetting.GetSystemSetting)
 	settingGroup.PUT("/system", platformSetting.SaveSystemSetting)
+	settingGroup.POST("/system/logo", platformSetting.UploadBrandLogo)
 	settingGroup.GET("/notices", platformSetting.ListNotices)
 	settingGroup.POST("/notices", platformSetting.SaveNotice)
 	settingGroup.PUT("/notices", platformSetting.SaveNotice)

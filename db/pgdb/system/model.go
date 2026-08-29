@@ -245,6 +245,24 @@ type TradeRecord struct {
 	TradeAt     int64   `json:"trade_at" gorm:"index:idx_trade_record_time"`
 }
 
+// LimitOrder 保存客户限价委托及对应冻结资金或持仓。
+type LimitOrder struct {
+	gorm.Model
+	CustomerID     uint    `json:"customer_id" gorm:"index:idx_limit_order_customer_status;not null"`
+	Symbol         string  `json:"symbol" gorm:"index:idx_limit_order_symbol_status;not null"`
+	StockName      string  `json:"stock_name"`
+	Direction      string  `json:"direction"`
+	LimitPrice     float64 `json:"limit_price"`
+	Quantity       float64 `json:"quantity"`
+	Status         string  `json:"status" gorm:"index:idx_limit_order_customer_status;index:idx_limit_order_symbol_status"`
+	FrozenAmount   float64 `json:"frozen_amount"`
+	FrozenQuantity float64 `json:"frozen_quantity"`
+	ExecutedPrice  float64 `json:"executed_price"`
+	TradeRecordID  uint    `json:"trade_record_id"`
+	FilledAt       int64   `json:"filled_at"`
+	CancelledAt    int64   `json:"cancelled_at"`
+}
+
 // CustomerWatchlist 保存客户自选证券，客户与证券组合唯一。
 type CustomerWatchlist struct {
 	gorm.Model

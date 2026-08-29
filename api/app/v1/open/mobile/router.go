@@ -10,6 +10,8 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	group := open.Group("/mobile")
 	group.POST("/auth/register", Register)
 	group.POST("/auth/login", Login)
+	group.GET("/branding", MobileBranding)
+	group.GET("/branding/logo", MobileBrandLogo)
 	group.GET("/article", MobileArticle)
 	group.GET("/news", ListNews)
 	group.GET("/news/categories", ListNewsCategories)

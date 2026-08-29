@@ -29,6 +29,7 @@ func migrateTable(db *gorm.DB) error {
 		&CustomerDevice{},
 		&TradePosition{},
 		&TradeRecord{},
+		&LimitOrder{},
 		&CustomerWatchlist{},
 		&StockSecurity{},
 		&SystemTenantMenuScope{},

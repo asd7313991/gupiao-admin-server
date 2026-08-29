@@ -188,20 +188,7 @@ func PlaceOrder(c *gin.Context) {
 }
 
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string) error {
-	amount := roundMoney(security.LastPrice * input.Quantity)
-	commissionRate := settings.Trade.BuyCommission
-	if input.Direction == "卖出" {
-		commissionRate = settings.Trade.SellCommission
-	}
-	commission := math.Max(amount*commissionRate, settings.Trade.MinCommission)
-	transferFee := amount * settings.Trade.TransferFee
-	managementFee := amount * settings.Trade.ManagementFee
-	stampDuty := float64(0)
-	if input.Direction == "卖出" {
-		stampDuty = amount * settings.Trade.StampDuty
-	}
-	commission, transferFee, managementFee, stampDuty = roundMoney(commission), roundMoney(transferFee), roundMoney(managementFee), roundMoney(stampDuty)
-	totalFee := commission + transferFee + managementFee + stampDuty
+	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security.LastPrice, input.Quantity, input.Direction, settings)
 
 	var position system.TradePosition
 	positionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error
@@ -329,3 +316,19 @@ func isMobileTradingTime(now time.Time, morningStart, morningEnd, afternoonStart
 }
 
 func roundMoney(value float64) float64 { return math.Round(value*100) / 100 }
+
+func calculateTradeFees(price, quantity float64, direction string, settings mobileTradeSettings) (amount, commission, transferFee, managementFee, stampDuty, totalFee float64) {
+	amount = roundMoney(price * quantity)
+	commissionRate := settings.Trade.BuyCommission
+	if direction == "卖出" {
+		commissionRate = settings.Trade.SellCommission
+	}
+	commission = roundMoney(math.Max(amount*commissionRate, settings.Trade.MinCommission))
+	transferFee = roundMoney(amount * settings.Trade.TransferFee)
+	managementFee = roundMoney(amount * settings.Trade.ManagementFee)
+	if direction == "卖出" {
+		stampDuty = roundMoney(amount * settings.Trade.StampDuty)
+	}
+	totalFee = commission + transferFee + managementFee + stampDuty
+	return
+}

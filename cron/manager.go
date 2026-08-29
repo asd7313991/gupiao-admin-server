@@ -22,7 +22,7 @@ func InitCronJobs() {
 	// 初始化用户缓存定时任务
 	InitUserCacheJob()
 	InitStockSyncJob()
-	InitStockSyncJob()
+	InitLimitOrderMatchJob()
 
 	// 启动调度器
 	scheduler.Start()

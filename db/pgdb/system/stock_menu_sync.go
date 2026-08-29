@@ -63,7 +63,7 @@ func syncStockAdminMenus(tx *gorm.DB) error {
 		{"SettingsSystem", "system", "/settings/system/index", "系统设置", "", "Settings", 1},
 		{"SettingsNotice", "notice", "/settings/notice/index", "公告管理", "", "Settings", 2},
 		{"SettingsArticle", "article", "/settings/article/index", "文章管理", "", "Settings", 3},
-		{"SettingsNews", "news", "/settings/news/index", "财经新闻", "", "Settings", 4},
+		{"SettingsNews", "news", "/settings/news/index", "新闻列表", "", "Settings", 4},
 		{"System", "/system", "/index/index", "系统管理", "ri-settings-line", "", 7},
 		{"SystemUser", "admin", "/system/admin/index", "管理员列表", "", "System", 1},
 		{"SystemRole", "role", "/system/role/index", "角色管理", "", "System", 2},

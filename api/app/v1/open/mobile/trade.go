@@ -48,6 +48,14 @@ type mobileTradeSettings struct {
 		MarginCallStart             float64 `json:"marginCallStart"`
 		MarginCallRate              float64 `json:"marginCallRate"`
 	} `json:"risk"`
+	Recharge struct {
+		MinRecharge  float64 `json:"minRecharge"`
+		QuickAmounts string  `json:"quickAmounts"`
+		MinWithdraw  float64 `json:"minWithdraw"`
+	} `json:"recharge"`
+	Links struct {
+		CustomerService string `json:"customerService"`
+	} `json:"links"`
 }
 
 type orderInput struct {

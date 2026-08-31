@@ -3,6 +3,8 @@ package mobile
 import (
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -56,11 +58,33 @@ func FinanceSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
+	settings, err := loadMobileTradeSettings()
+	if err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取资金配置失败")
+		return
+	}
 	response.ReturnData(c, gin.H{
 		"balance": item.Balance, "frozen_balance": item.FrozenBalance,
 		"bank_name": item.BankName, "bank_card_masked": mask(item.BankCard, 4, 4),
 		"verified": item.Verified, "has_trade_pin": item.TradePassword != "",
+		"quick_amounts": parseQuickAmounts(settings.Recharge.QuickAmounts),
+		"min_recharge":  settings.Recharge.MinRecharge, "min_withdraw": settings.Recharge.MinWithdraw,
+		"customer_service": strings.TrimSpace(settings.Links.CustomerService),
 	})
+}
+
+func parseQuickAmounts(value string) []float64 {
+	result := make([]float64, 0)
+	for _, raw := range strings.Split(value, ",") {
+		amount, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err == nil && amount > 0 {
+			result = append(result, amount)
+		}
+	}
+	if len(result) == 0 {
+		return []float64{1000, 5000, 10000, 50000}
+	}
+	return result
 }
 
 func RequestRecharge(c *gin.Context) {

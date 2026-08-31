@@ -40,6 +40,17 @@ type transferRecordView struct {
 	ReviewedAt     int64   `json:"reviewed_at"`
 }
 
+type fundFlowView struct {
+	ID        uint    `json:"id"`
+	Type      string  `json:"type"`
+	Direction string  `json:"direction"`
+	Currency  string  `json:"currency"`
+	Amount    float64 `json:"amount"`
+	Balance   float64 `json:"balance"`
+	Remark    string  `json:"remark"`
+	CreatedAt int64   `json:"created_at"`
+}
+
 func FinanceSummary(c *gin.Context) {
 	item, ok := currentVerificationCustomer(c)
 	if !ok {
@@ -155,6 +166,40 @@ func ListCustomerWithdrawals(c *gin.Context) {
 	result := make([]transferRecordView, len(rows))
 	for index, row := range rows {
 		result[index] = transferViewFromWithdrawal(row, system.Customer{})
+	}
+	response.ReturnData(c, gin.H{"records": result, "total": total, "page": page, "page_size": size})
+}
+
+func ListCustomerFundFlows(c *gin.Context) {
+	page, size := transferPage(c)
+	db := pgdb.GetClient().Where("customer_id = ?", middleware.GetCurrentCustomerID(c))
+	if flowType := c.Query("type"); flowType != "" {
+		db = db.Where("type = ?", flowType)
+	}
+	var total int64
+	if err := db.Model(&system.CustomerFundRecord{}).Count(&total).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取资金流水失败")
+		return
+	}
+	var rows []system.CustomerFundRecord
+	if err := db.Order("created_at DESC, id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取资金流水失败")
+		return
+	}
+	result := make([]fundFlowView, len(rows))
+	for index, row := range rows {
+		flowType, direction := row.Type, row.Direction
+		if flowType == "" {
+			flowType = "资金调整"
+		}
+		if direction == "" {
+			if row.Amount < 0 {
+				direction = "扣款"
+			} else {
+				direction = "入账"
+			}
+		}
+		result[index] = fundFlowView{ID: row.ID, Type: flowType, Direction: direction, Currency: row.Currency, Amount: math.Abs(row.Amount), Balance: row.Balance, Remark: row.Remark, CreatedAt: row.CreatedAt.Unix()}
 	}
 	response.ReturnData(c, gin.H{"records": result, "total": total, "page": page, "page_size": size})
 }

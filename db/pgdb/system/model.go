@@ -161,6 +161,18 @@ type CustomerFundRecord struct {
 	Remark     string  `json:"remark"`
 }
 
+// DailyManagementFee 记录每日持仓管理费，客户与计费日期唯一以避免重复扣款。
+type DailyManagementFee struct {
+	gorm.Model
+	CustomerID    uint    `json:"customer_id" gorm:"not null;uniqueIndex:idx_daily_fee_customer_date"`
+	ChargeDate    string  `json:"charge_date" gorm:"size:10;not null;uniqueIndex:idx_daily_fee_customer_date"`
+	MarketValue   float64 `json:"market_value"`
+	FeeAmount     float64 `json:"fee_amount"`
+	ChargedAmount float64 `json:"charged_amount"`
+	ForcedClose   bool    `json:"forced_close"`
+	BalanceAfter  float64 `json:"balance_after"`
+}
+
 // FinanceRecharge 保存客户充值审核和到账记录。
 type FinanceRecharge struct {
 	gorm.Model
@@ -211,20 +223,23 @@ type CustomerDevice struct {
 // TradePosition 保存客户证券持仓与成本、盈亏数据。
 type TradePosition struct {
 	gorm.Model
-	CustomerID   uint    `json:"customer_id" gorm:"index;not null"`
-	Symbol       string  `json:"symbol" gorm:"index"`
-	StockName    string  `json:"stock_name"`
-	Currency     string  `json:"currency"`
-	PositionQty  float64 `json:"position_qty"`
-	AvailableQty float64 `json:"available_qty"`
-	CurrentPrice float64 `json:"current_price"`
-	CostPrice    float64 `json:"cost_price"`
-	TotalCost    float64 `json:"total_cost"`
-	MarketValue  float64 `json:"market_value"`
-	ProfitLoss   float64 `json:"profit_loss"`
-	ProfitRate   float64 `json:"profit_rate"`
-	Status       uint    `json:"status" gorm:"default:1"`
-	BuyAt        int64   `json:"buy_at"`
+	CustomerID      uint    `json:"customer_id" gorm:"index;not null"`
+	Symbol          string  `json:"symbol" gorm:"index"`
+	StockName       string  `json:"stock_name"`
+	Currency        string  `json:"currency"`
+	PositionQty     float64 `json:"position_qty"`
+	AvailableQty    float64 `json:"available_qty"`
+	CurrentPrice    float64 `json:"current_price"`
+	CostPrice       float64 `json:"cost_price"`
+	TotalCost       float64 `json:"total_cost"`
+	Margin          float64 `json:"margin"`
+	Leverage        float64 `json:"leverage" gorm:"default:1"`
+	MarginCallLevel int     `json:"margin_call_level"`
+	MarketValue     float64 `json:"market_value"`
+	ProfitLoss      float64 `json:"profit_loss"`
+	ProfitRate      float64 `json:"profit_rate"`
+	Status          uint    `json:"status" gorm:"default:1"`
+	BuyAt           int64   `json:"buy_at"`
 }
 
 // TradeRecord 保存买入、卖出等成交记录；常用筛选字段均建索引。

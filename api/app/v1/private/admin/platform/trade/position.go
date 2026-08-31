@@ -46,6 +46,10 @@ func SavePosition(c *gin.Context) {
 		input.BuyAt = time.Now().Unix()
 	}
 	input.TradePosition.TotalCost = input.PositionQty * input.CostPrice
+	if input.Leverage < 1 {
+		input.Leverage = 5
+	}
+	input.TradePosition.Margin = input.TotalCost / input.Leverage
 	input.TradePosition.MarketValue = input.PositionQty * input.CurrentPrice
 	input.TradePosition.ProfitLoss = input.MarketValue - input.TotalCost
 	if input.TradePosition.TotalCost != 0 {

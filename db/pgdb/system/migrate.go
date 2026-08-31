@@ -1,8 +1,10 @@
 package system
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.uber.org/zap"
@@ -30,6 +32,7 @@ func migrateTable(db *gorm.DB) error {
 		&SystemUserLoginLog{},
 		&Customer{},
 		&CustomerFundRecord{},
+		&DailyManagementFee{},
 		&FinanceRecharge{},
 		&FinanceWithdrawal{},
 		&CustomerDevice{},
@@ -360,7 +363,7 @@ func seedTradePositions(db *gorm.DB) error {
 		quantity := 1000 + float64(index)*500
 		cost := 11.8 + float64(index)*8
 		price := 12.5 + float64(index)*8
-		positions = append(positions, TradePosition{CustomerID: customer.ID, Symbol: fmt.Sprintf("6000%02d.SH", index+1), StockName: names[index%len(names)], Currency: "CNY", PositionQty: quantity, AvailableQty: quantity - 100, CurrentPrice: price, CostPrice: cost, TotalCost: quantity * cost, MarketValue: quantity * price, ProfitLoss: quantity * (price - cost), ProfitRate: (price - cost) / cost * 100, Status: StatusEnabled, BuyAt: time.Now().AddDate(0, 0, -index-1).Unix()})
+		positions = append(positions, TradePosition{CustomerID: customer.ID, Symbol: fmt.Sprintf("6000%02d.SH", index+1), StockName: names[index%len(names)], Currency: "CNY", PositionQty: quantity, AvailableQty: quantity - 100, CurrentPrice: price, CostPrice: cost, TotalCost: quantity * cost, Margin: quantity * cost / 5, Leverage: 5, MarketValue: quantity * price, ProfitLoss: quantity * (price - cost), ProfitRate: (price - cost) / cost * 100, Status: StatusEnabled, BuyAt: time.Now().AddDate(0, 0, -index-1).Unix()})
 	}
 	return db.Create(&positions).Error
 }
@@ -450,6 +453,10 @@ func Migrate(db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
+	err = migrateLeveragedPositions(db)
+	if err != nil {
+		return err
+	}
 	err = seedFinanceRecords(db)
 	if err != nil {
 		return err
@@ -462,11 +469,52 @@ func Migrate(db *gorm.DB) error {
 	return nil
 }
 
+func migrateLeveragedPositions(db *gorm.DB) error {
+	var setting AppSystemSetting
+	if err := db.First(&setting).Error; err != nil {
+		return err
+	}
+	var config struct {
+		Risk struct {
+			DefaultLeverage    float64 `json:"defaultLeverage"`
+			AppLeverageEnabled bool    `json:"appLeverageEnabled"`
+		} `json:"risk"`
+	}
+	if err := json.Unmarshal([]byte(setting.Config), &config); err != nil {
+		return err
+	}
+	if !config.Risk.AppLeverageEnabled || config.Risk.DefaultLeverage < 1 {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var positions []TradePosition
+		if err := tx.Where("position_qty > 0 AND total_cost > 0 AND COALESCE(margin, 0) <= 0").Find(&positions).Error; err != nil {
+			return err
+		}
+		refunds := make(map[uint]float64)
+		for index := range positions {
+			position := &positions[index]
+			position.Leverage = config.Risk.DefaultLeverage
+			position.Margin = math.Round(position.TotalCost/position.Leverage*100) / 100
+			refunds[position.CustomerID] += position.TotalCost - position.Margin
+			if err := tx.Save(position).Error; err != nil {
+				return err
+			}
+		}
+		for customerID, refund := range refunds {
+			if err := tx.Model(&Customer{}).Where("id = ?", customerID).Update("balance", gorm.Expr("balance + ?", refund)).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func seedAppSystemSetting(db *gorm.DB) error {
 	var count int64
 	if err := db.Model(&AppSystemSetting{}).Count(&count).Error; err != nil || count > 0 {
 		return err
 	}
-	config := `{"branding":{"productName":"证券行情","logo":""},"trade":{"buyCommission":0,"sellCommission":0,"minCommission":0,"stampDuty":0.0005,"transferFee":0.0001,"managementFee":0.00028,"morningStart":"09:30:00","morningEnd":"11:30:00","afternoonStart":"13:00:00","afternoonEnd":"15:00:00","allDay":false,"nonTradingFee":false},"stockSync":{"enabled":true,"tradingIntervalSecs":60,"offHoursIntervalSecs":600,"maxSyncRows":10000},"risk":{"defaultLeverage":5,"forceCloseRatio":0.8,"appLeverageEnabled":false},"recharge":{"minRecharge":5000,"quickAmounts":"5000,10000,100000,300000,500000,1000000","minWithdraw":100,"withdrawFeeRate":0,"minWithdrawFee":0,"dailyWithdrawLimit":1,"withdrawStart":"09:30:00","withdrawEnd":"15:00:00","sameDaySellWithdraw":true},"limits":{"starBoard":0.16,"beijingBoard":0.24,"mainBoard":0.08,"growthBoard":0.16,"minStarShares":200,"stTrade":false,"newStockTrade":false},"links":{"customerService":"https://service.example.com","hkdRate":0.89,"aQuote":"https://quotes.example.com/#/mobile/","hkQuote":"https://quotes.example.com/#/mobile/","telegramToken":"","telegramChatId":""}}`
+	config := `{"branding":{"productName":"证券行情","logo":""},"trade":{"buyCommission":0,"sellCommission":0,"minCommission":0,"stampDuty":0.0005,"transferFee":0.0001,"morningStart":"09:30:00","morningEnd":"11:30:00","afternoonStart":"13:00:00","afternoonEnd":"15:00:00","allDay":false,"nonTradingFee":false},"stockSync":{"enabled":true,"tradingIntervalSecs":60,"offHoursIntervalSecs":600,"maxSyncRows":10000},"risk":{"defaultLeverage":5,"forceCloseRatio":0.8,"appLeverageEnabled":true,"managementFeePerTenThousand":2.8,"marginCallStart":16,"marginCallRate":0.005},"recharge":{"minRecharge":5000,"quickAmounts":"5000,10000,100000,300000,500000,1000000","minWithdraw":100,"withdrawFeeRate":0,"minWithdrawFee":0,"dailyWithdrawLimit":1,"withdrawStart":"09:30:00","withdrawEnd":"15:00:00","sameDaySellWithdraw":true},"limits":{"starBoard":0.16,"beijingBoard":0.24,"mainBoard":0.08,"growthBoard":0.16,"minStarShares":200,"stTrade":false,"newStockTrade":false},"links":{"customerService":"https://service.example.com","hkdRate":0.89,"aQuote":"https://quotes.example.com/#/mobile/","hkQuote":"https://quotes.example.com/#/mobile/","telegramToken":"","telegramChatId":""}}`
 	return db.Create(&AppSystemSetting{Config: config}).Error
 }

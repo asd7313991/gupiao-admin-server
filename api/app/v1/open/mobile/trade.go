@@ -41,6 +41,13 @@ type mobileTradeSettings struct {
 		STTrade       bool    `json:"stTrade"`
 		NewStockTrade bool    `json:"newStockTrade"`
 	} `json:"limits"`
+	Risk struct {
+		DefaultLeverage             float64 `json:"defaultLeverage"`
+		AppLeverageEnabled          bool    `json:"appLeverageEnabled"`
+		ManagementFeePerTenThousand float64 `json:"managementFeePerTenThousand"`
+		MarginCallStart             float64 `json:"marginCallStart"`
+		MarginCallRate              float64 `json:"marginCallRate"`
+	} `json:"risk"`
 }
 
 type orderInput struct {
@@ -73,12 +80,29 @@ type tradePositionView struct {
 	AvailableQty float64 `json:"available_qty"`
 	CurrentPrice float64 `json:"current_price"`
 	CostPrice    float64 `json:"cost_price"`
+	TotalCost    float64 `json:"total_cost"`
+	Margin       float64 `json:"margin"`
+	Leverage     float64 `json:"leverage"`
 	MarketValue  float64 `json:"market_value"`
 	ProfitLoss   float64 `json:"profit_loss"`
 	ProfitRate   float64 `json:"profit_rate"`
 }
 
 var errTradeRejected = errors.New("trade rejected")
+
+func MobileTradeSettings(c *gin.Context) {
+	settings, err := loadMobileTradeSettings()
+	if err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取交易规则失败")
+		return
+	}
+	leverage := effectiveLeverage(settings)
+	response.ReturnData(c, gin.H{
+		"leverage_enabled":    leverage > 1,
+		"default_leverage":    leverage,
+		"management_fee_rate": effectiveManagementFeeRate(settings),
+	})
+}
 
 func ListCustomerPositions(c *gin.Context) {
 	customerID := middleware.GetCurrentCustomerID(c)
@@ -100,7 +124,12 @@ func ListCustomerPositions(c *gin.Context) {
 		if item.TotalCost > 0 {
 			profitRate = profitLoss / item.TotalCost * 100
 		}
-		views = append(views, tradePositionView{ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
+		leverage := positionLeverage(item)
+		margin := item.Margin
+		if margin <= 0 && item.TotalCost > 0 {
+			margin = roundMoney(item.TotalCost / leverage)
+		}
+		views = append(views, tradePositionView{ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
 	}
 	response.ReturnData(c, views)
 }
@@ -193,7 +222,12 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 	var position system.TradePosition
 	positionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error
 	if input.Direction == "买入" {
-		totalDebit := amount + totalFee
+		leverage := effectiveLeverage(settings)
+		if positionErr == nil && position.Leverage > 0 {
+			leverage = position.Leverage
+		}
+		margin := roundMoney(amount / leverage)
+		totalDebit := margin + totalFee
 		if customer.Balance < totalDebit {
 			*rejection = fmt.Sprintf("余额不足，还需 %.2f 元", totalDebit-customer.Balance)
 			return errTradeRejected
@@ -205,7 +239,10 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			return positionErr
 		}
 		newQty := position.PositionQty + input.Quantity
-		position.TotalCost += totalDebit
+		position.TotalCost += amount + totalFee
+		position.Margin = roundMoney(position.Margin + margin)
+		position.Leverage = leverage
+		position.MarginCallLevel = 0
 		position.PositionQty, position.AvailableQty = newQty, position.AvailableQty+input.Quantity
 		position.CostPrice = position.TotalCost / newQty
 	} else {
@@ -217,9 +254,14 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			*rejection = "非全部卖出时，数量须为 100 股的整数倍"
 			return errTradeRejected
 		}
-		customer.Balance = roundMoney(customer.Balance + amount - totalFee)
+		positionQtyBefore := position.PositionQty
 		costRemoved := position.CostPrice * input.Quantity
+		marginRemoved := position.Margin
+		if input.Quantity < positionQtyBefore {
+			marginRemoved = roundMoney(position.Margin * input.Quantity / positionQtyBefore)
+		}
 		realized := amount - totalFee - costRemoved
+		customer.Balance = roundMoney(customer.Balance + marginRemoved + realized)
 		if realized >= 0 {
 			customer.TotalProfit += realized
 		} else {
@@ -228,8 +270,9 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		position.PositionQty -= input.Quantity
 		position.AvailableQty -= input.Quantity
 		position.TotalCost = math.Max(0, position.TotalCost-costRemoved)
+		position.Margin = math.Max(0, roundMoney(position.Margin-marginRemoved))
 		if position.PositionQty == 0 {
-			position.CostPrice, position.Status = 0, system.StatusDisabled
+			position.CostPrice, position.Margin, position.MarginCallLevel, position.Status = 0, 0, 0, system.StatusDisabled
 		}
 	}
 	position.CurrentPrice = security.LastPrice
@@ -254,6 +297,12 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 	if err := tx.Create(&record).Error; err != nil {
 		return err
 	}
+	if totalFee > 0 {
+		feeRemark := fmt.Sprintf("%s %s %.0f股；佣金 %.2f，印花税 %.2f，过户费 %.2f", security.Name, input.Direction, input.Quantity, commission, stampDuty, transferFee)
+		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "交易费用", Direction: "扣款", Currency: "CNY", Amount: totalFee, Balance: customer.Balance, Remark: feeRemark}).Error; err != nil {
+			return err
+		}
+	}
 	*result = orderResult{RecordID: record.ID, PositionID: position.ID, Direction: input.Direction, Price: security.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, ManagementFee: managementFee, TotalFee: totalFee, BalanceAfter: customer.Balance, ExecutedAt: record.TradeAt}
 	return nil
 }
@@ -263,11 +312,35 @@ func loadMobileTradeSettings() (mobileTradeSettings, error) {
 	result.Trade.MorningStart, result.Trade.MorningEnd = "09:30:00", "11:30:00"
 	result.Trade.AfternoonStart, result.Trade.AfternoonEnd = "13:00:00", "15:00:00"
 	result.Limits.MinStarShares = 200
+	result.Risk.DefaultLeverage = 5
+	result.Risk.MarginCallStart = 16
+	result.Risk.MarginCallRate = 0.005
 	var row system.AppSystemSetting
 	if err := pgdb.GetClient().First(&row).Error; err != nil {
 		return result, err
 	}
 	return result, json.Unmarshal([]byte(row.Config), &result)
+}
+
+func effectiveLeverage(settings mobileTradeSettings) float64 {
+	if !settings.Risk.AppLeverageEnabled || settings.Risk.DefaultLeverage < 1 {
+		return 1
+	}
+	return settings.Risk.DefaultLeverage
+}
+
+func effectiveManagementFeeRate(settings mobileTradeSettings) float64 {
+	if settings.Risk.ManagementFeePerTenThousand > 0 {
+		return settings.Risk.ManagementFeePerTenThousand / 10000
+	}
+	return settings.Trade.ManagementFee
+}
+
+func positionLeverage(position system.TradePosition) float64 {
+	if position.Leverage >= 1 {
+		return position.Leverage
+	}
+	return 1
 }
 
 func validateSecurityTrade(security system.StockSecurity, input orderInput, settings mobileTradeSettings) string {
@@ -325,7 +398,7 @@ func calculateTradeFees(price, quantity float64, direction string, settings mobi
 	}
 	commission = roundMoney(math.Max(amount*commissionRate, settings.Trade.MinCommission))
 	transferFee = roundMoney(amount * settings.Trade.TransferFee)
-	managementFee = roundMoney(amount * settings.Trade.ManagementFee)
+	managementFee = 0
 	if direction == "卖出" {
 		stampDuty = roundMoney(amount * settings.Trade.StampDuty)
 	}

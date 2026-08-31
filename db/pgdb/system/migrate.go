@@ -210,25 +210,15 @@ func migrateData(db *gorm.DB) error {
 func seedDefaultNewsSources(db *gorm.DB) error {
 	defaultSources := []NewsSource{
 		{
-			Name:            "国务院政策发布",
+			Name:            "第一财经金融频道",
 			SourceType:      "api",
-			BaseURL:         "https://www.gov.cn/pushinfo/v150203/pushinfo.json",
-			CategoryMapping: `{"政策":"POLICY","财经":"FINANCE","经济":"ECONOMY"}`,
-			Enabled:         true,
-			IntervalSeconds: 600,
-			TimeoutSeconds:  10,
-			RateLimit:       20,
-			ConfigJSON:      `{"adapter":"gov_cn_pushinfo","category":"POLICY","include_content":false,"max_items":40,"request_timeout_ms":10000,"max_response_bytes":2097152}`,
-		},
-		{
-			Name:            "新浪财经",
-			SourceType:      "html",
-			BaseURL:         "https://finance.sina.com.cn/",
+			BaseURL:         "https://www.yicai.com/api/ajax/getjuhelist?action=finance",
+			CategoryMapping: `{"金融":"FINANCE","A股":"A_SHARE","港股":"HK_STOCK","美股":"US_STOCK"}`,
 			Enabled:         true,
 			IntervalSeconds: 600,
 			TimeoutSeconds:  15,
 			RateLimit:       20,
-			ConfigJSON:      `{"adapter":"sina_finance","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":4194304}`,
+			ConfigJSON:      `{"adapter":"yicai_finance","category":"FINANCE","include_content":false,"max_items":30,"max_response_bytes":2097152}`,
 		},
 		{
 			Name:            "第一财经热门",

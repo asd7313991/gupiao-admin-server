@@ -16,6 +16,9 @@ import (
 
 type YicaiHotAdapter struct{}
 
+// YicaiFinanceAdapter uses the same response schema as the hot-news endpoint.
+type YicaiFinanceAdapter struct{}
+
 type yicaiHotItem struct {
 	ChannelName string `json:"ChannelName"`
 	CreateDate  string `json:"CreateDate"`
@@ -31,6 +34,14 @@ type yicaiHotItem struct {
 
 func (adapter YicaiHotAdapter) Key() string {
 	return "yicai_hot"
+}
+
+func (adapter YicaiFinanceAdapter) Key() string {
+	return "yicai_finance"
+}
+
+func (adapter YicaiFinanceAdapter) Fetch(ctx context.Context, source SourceReader, cfg SourceConfig) ([]NormalizedNews, error) {
+	return YicaiHotAdapter{}.Fetch(ctx, source, cfg)
 }
 
 func (adapter YicaiHotAdapter) Fetch(ctx context.Context, source SourceReader, cfg SourceConfig) ([]NormalizedNews, error) {

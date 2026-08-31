@@ -23,6 +23,7 @@ func getCollector() *newsdomain.CollectionService {
 
 type newsUpdateInput struct {
 	ID       uint   `json:"id"`
+	Title    string `json:"title"`
 	Category string `json:"category"`
 	Summary  string `json:"summary"`
 	Status   string `json:"status"`
@@ -219,6 +220,9 @@ func UpdateNews(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{}
+	if title := strings.TrimSpace(input.Title); title != "" {
+		updates["title"] = title
+	}
 	if category := strings.TrimSpace(input.Category); category != "" {
 		updates["category"] = category
 	}

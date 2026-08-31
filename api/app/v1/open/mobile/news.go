@@ -74,7 +74,7 @@ func ListNews(c *gin.Context) {
 		return
 	}
 	var rows []system.FinanceNews
-	if err := db.Order("is_top DESC, published_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
+	if err := db.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取新闻失败")
 		return
 	}

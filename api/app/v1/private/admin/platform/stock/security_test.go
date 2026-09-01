@@ -1,6 +1,9 @@
 package stock
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestClassifyBoard(t *testing.T) {
 	tests := []struct {
@@ -19,6 +22,29 @@ func TestClassifyBoard(t *testing.T) {
 		t.Run(test.code, func(t *testing.T) {
 			if got := classifyBoard(test.code, test.market); got != test.want {
 				t.Fatalf("classifyBoard(%q, %d) = %q, want %q", test.code, test.market, got, test.want)
+			}
+		})
+	}
+}
+
+func TestEastmoneyDateUnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "数字日期", data: `20260901`, want: "2026-09-01"},
+		{name: "字符串日期", data: `"20260901"`, want: "2026-09-01"},
+		{name: "无效日期", data: `"-"`, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got eastmoneyDate
+			if err := json.Unmarshal([]byte(test.data), &got); err != nil {
+				t.Fatalf("解析上市日期失败：%v", err)
+			}
+			if string(got) != test.want {
+				t.Fatalf("上市日期 = %q, want %q", got, test.want)
 			}
 		})
 	}

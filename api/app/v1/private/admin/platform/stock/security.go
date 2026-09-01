@@ -25,6 +25,7 @@ type eastmoneyResponse struct {
 			Code       string        `json:"f12"`
 			Market     int           `json:"f13"`
 			Name       string        `json:"f14"`
+			ListDate   eastmoneyDate `json:"f26"`
 			Price      flexibleFloat `json:"f2"`
 			ChangeRate flexibleFloat `json:"f3"`
 			Volume     flexibleFloat `json:"f5"`
@@ -35,6 +36,23 @@ type eastmoneyResponse struct {
 }
 
 type flexibleFloat float64
+
+type eastmoneyDate string
+
+func (value *eastmoneyDate) UnmarshalJSON(data []byte) error {
+	text := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	if len(text) != 8 || text == "00000000" {
+		*value = ""
+		return nil
+	}
+	parsed, err := time.Parse("20060102", text)
+	if err != nil {
+		*value = ""
+		return nil
+	}
+	*value = eastmoneyDate(parsed.Format("2006-01-02"))
+	return nil
+}
 
 func (value *flexibleFloat) UnmarshalJSON(data []byte) error {
 	text := strings.Trim(strings.TrimSpace(string(data)), `"`)
@@ -58,6 +76,7 @@ type securityResponse struct {
 	Name       string  `json:"name"`
 	Exchange   string  `json:"exchange"`
 	Board      string  `json:"board"`
+	ListDate   string  `json:"list_date"`
 	LastPrice  float64 `json:"last_price"`
 	ChangeRate float64 `json:"change_rate"`
 	Status     uint    `json:"status"`
@@ -66,7 +85,7 @@ type securityResponse struct {
 }
 
 func toResponse(item system.StockSecurity) securityResponse {
-	return securityResponse{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Status: item.Status, Source: item.Source, UpdatedAt: item.UpdatedAt.Unix()}
+	return securityResponse{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, ListDate: item.ListDate, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Status: item.Status, Source: item.Source, UpdatedAt: item.UpdatedAt.Unix()}
 }
 
 func List(c *gin.Context) {
@@ -228,7 +247,7 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 		maxSyncRows = 10000
 	}
 	for page, totalPages := 1, 1; page <= totalPages; page++ {
-		q := url.Values{"pn": {fmt.Sprint(page)}, "pz": {"100"}, "po": {"1"}, "np": {"1"}, "ut": {"bd1d9ddb04089700cf9c27f6f7426281"}, "fltt": {"2"}, "invt": {"2"}, "fid": {"f3"}, "fs": {"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"}, "fields": {"f12,f13,f14,f2,f3,f5,f6,f8"}}
+		q := url.Values{"pn": {fmt.Sprint(page)}, "pz": {"100"}, "po": {"1"}, "np": {"1"}, "ut": {"bd1d9ddb04089700cf9c27f6f7426281"}, "fltt": {"2"}, "invt": {"2"}, "fid": {"f3"}, "fs": {"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"}, "fields": {"f12,f13,f14,f26,f2,f3,f5,f6,f8"}}
 		resp, err := client.Get("https://push2delay.eastmoney.com/api/qt/clist/get?" + q.Encode())
 		if err != nil {
 			return synced, err
@@ -262,9 +281,9 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 				suffix = "BJ"
 				exchange = "北交所"
 			}
-			securities = append(securities, system.StockSecurity{Code: item.Code, Symbol: item.Code + "." + suffix, Market: market, Name: item.Name, Exchange: exchange, Board: board, LastPrice: float64(item.Price), ChangeRate: float64(item.ChangeRate), Volume: float64(item.Volume), Amount: float64(item.Amount), Turnover: float64(item.Turnover), Status: system.StatusEnabled, Source: "eastmoney"})
+			securities = append(securities, system.StockSecurity{Code: item.Code, Symbol: item.Code + "." + suffix, Market: market, Name: item.Name, Exchange: exchange, Board: board, ListDate: string(item.ListDate), LastPrice: float64(item.Price), ChangeRate: float64(item.ChangeRate), Volume: float64(item.Volume), Amount: float64(item.Amount), Turnover: float64(item.Turnover), Status: system.StatusEnabled, Source: "eastmoney"})
 		}
-		if err := pgdb.GetClient().Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "last_price", "change_rate", "volume", "amount", "turnover", "source", "updated_at"})}).Create(&securities).Error; err != nil {
+		if err := pgdb.GetClient().Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date", "last_price", "change_rate", "volume", "amount", "turnover", "source", "updated_at"})}).Create(&securities).Error; err != nil {
 			return synced, err
 		}
 		synced += len(securities)

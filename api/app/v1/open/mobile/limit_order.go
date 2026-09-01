@@ -243,6 +243,14 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		if (order.Direction == "买入" && security.LastPrice > order.LimitPrice) || (order.Direction == "卖出" && security.LastPrice < order.LimitPrice) {
 			return nil
 		}
+		tradeInput := orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}
+		if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
+			if err := releaseLimitOrderFreeze(tx, &order); err != nil {
+				return err
+			}
+			order.Status, order.CancelledAt = limitOrderCancelled, time.Now().Unix()
+			return tx.Save(&order).Error
+		}
 		var customer system.Customer
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, order.CustomerID).Error; err != nil {
 			return err
@@ -265,7 +273,7 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		}
 		var result orderResult
 		var rejection string
-		if err := executeMobileOrder(tx, &customer, security, orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}, settings, &result, &rejection); err != nil {
+		if err := executeMobileOrder(tx, &customer, security, tradeInput, settings, &result, &rejection); err != nil {
 			return err
 		}
 		if err := tx.Model(&system.TradeRecord{}).Where("id = ?", result.RecordID).Update("remark", "限价委托自动成交").Error; err != nil {

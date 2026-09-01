@@ -319,6 +319,10 @@ func loadMobileTradeSettings() (mobileTradeSettings, error) {
 	var result mobileTradeSettings
 	result.Trade.MorningStart, result.Trade.MorningEnd = "09:30:00", "11:30:00"
 	result.Trade.AfternoonStart, result.Trade.AfternoonEnd = "13:00:00", "15:00:00"
+	result.Limits.MainBoard = 0.08
+	result.Limits.GrowthBoard = 0.16
+	result.Limits.StarBoard = 0.16
+	result.Limits.BeijingBoard = 0.24
 	result.Limits.MinStarShares = 200
 	result.Risk.DefaultLeverage = 5
 	result.Risk.MarginCallStart = 16
@@ -352,15 +356,22 @@ func positionLeverage(position system.TradePosition) float64 {
 }
 
 func validateSecurityTrade(security system.StockSecurity, input orderInput, settings mobileTradeSettings) string {
+	return validateSecurityTradeAt(security, input, settings, time.Now())
+}
+
+func validateSecurityTradeAt(security system.StockSecurity, input orderInput, settings mobileTradeSettings, now time.Time) string {
 	if input.Direction == "卖出" {
 		return ""
 	}
-	if strings.HasPrefix(security.Name, "ST") || strings.HasPrefix(security.Name, "*ST") {
+	securityName := strings.ToUpper(strings.TrimSpace(security.Name))
+	if strings.HasPrefix(securityName, "ST") || strings.HasPrefix(securityName, "*ST") || strings.HasPrefix(securityName, "SST") {
 		if !settings.Limits.STTrade {
-			return "系统暂未开放 ST 股票交易"
+			return "系统暂未开放 ST、*ST、SST 股票交易"
 		}
 	}
-	if strings.HasPrefix(security.Name, "N") && !settings.Limits.NewStockTrade {
+	china := time.FixedZone("Asia/Shanghai", 8*60*60)
+	isListedToday := security.ListDate != "" && security.ListDate == now.In(china).Format("2006-01-02")
+	if (isListedToday || strings.HasPrefix(securityName, "N")) && !settings.Limits.NewStockTrade {
 		return "系统暂未开放新股交易"
 	}
 	if security.Board == "科创板" {

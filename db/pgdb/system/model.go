@@ -294,6 +294,7 @@ type StockSecurity struct {
 	Name       string  `json:"name" gorm:"index"`
 	Exchange   string  `json:"exchange" gorm:"index"`
 	Board      string  `json:"board" gorm:"index"`
+	ListDate   string  `json:"list_date" gorm:"index"`
 	LastPrice  float64 `json:"last_price"`
 	ChangeRate float64 `json:"change_rate"`
 	Volume     float64 `json:"volume"`

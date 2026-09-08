@@ -436,7 +436,7 @@ func calculateTradeFees(security system.StockSecurity, quantity float64, directi
 			commissionRate = settings.Trade.SellCommission
 		}
 		commission = commissionAmount(amount, commissionRate, settings.Trade.MinCommission)
-		if isShanghaiSecurity(security) {
+		if isShanghaiSecurity(security) || direction == "卖出" {
 			transferFee = roundMoney(amount * settings.Trade.TransferFee)
 		}
 		if direction == "卖出" {

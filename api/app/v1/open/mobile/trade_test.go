@@ -71,15 +71,18 @@ func TestCalculateTradeFees(t *testing.T) {
 		name      string
 		security  system.StockSecurity
 		direction string
+		quantity  float64
 		want      [6]float64
 	}{
-		{name: "沪市卖出", security: system.StockSecurity{Symbol: "600000.SH", LastPrice: 10}, direction: "卖出", want: [6]float64{1000, 5, 0.1, 0, 0.5, 5.6}},
-		{name: "深市买入", security: system.StockSecurity{Symbol: "000001.SZ", LastPrice: 10}, direction: "买入", want: [6]float64{1000, 5, 0, 0, 0, 5}},
-		{name: "港股卖出", security: system.StockSecurity{Symbol: "00700.HK", Market: "HK", LastPrice: 10}, direction: "卖出", want: [6]float64{1000, 15, 0.13, 0, 1, 16.13}},
+		{name: "沪市买入", security: system.StockSecurity{Symbol: "600000.SH", LastPrice: 10}, direction: "买入", quantity: 10000, want: [6]float64{100000, 30, 10, 0, 0, 40}},
+		{name: "沪市卖出", security: system.StockSecurity{Symbol: "600000.SH", LastPrice: 10}, direction: "卖出", quantity: 10000, want: [6]float64{100000, 30, 10, 0, 50, 90}},
+		{name: "深市买入", security: system.StockSecurity{Symbol: "000001.SZ", LastPrice: 10}, direction: "买入", quantity: 10000, want: [6]float64{100000, 30, 0, 0, 0, 30}},
+		{name: "深市卖出", security: system.StockSecurity{Symbol: "000001.SZ", LastPrice: 10}, direction: "卖出", quantity: 10000, want: [6]float64{100000, 30, 10, 0, 50, 90}},
+		{name: "港股卖出", security: system.StockSecurity{Symbol: "00700.HK", Market: "HK", LastPrice: 10}, direction: "卖出", quantity: 10000, want: [6]float64{100000, 25, 12.55, 0, 100, 137.55}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(test.security, 100, test.direction, settings)
+			amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(test.security, test.quantity, test.direction, settings)
 			values := [6]float64{amount, commission, transferFee, managementFee, stampDuty, totalFee}
 			for index := range values {
 				if math.Abs(values[index]-test.want[index]) > 0.000001 {

@@ -32,6 +32,14 @@ type mobileTradeSettings struct {
 		AfternoonEnd   string  `json:"afternoonEnd"`
 		AllDay         bool    `json:"allDay"`
 	} `json:"trade"`
+	HKTrade struct {
+		Commission    float64 `json:"commission"`
+		MinCommission float64 `json:"minCommission"`
+		StampDuty     float64 `json:"stampDuty"`
+		RegulatoryFee float64 `json:"regulatoryFee"`
+		TradingFee    float64 `json:"tradingFee"`
+		SettlementFee float64 `json:"settlementFee"`
+	} `json:"hkTrade"`
 	Limits struct {
 		StarBoard     float64 `json:"starBoard"`
 		BeijingBoard  float64 `json:"beijingBoard"`
@@ -225,7 +233,7 @@ func PlaceOrder(c *gin.Context) {
 }
 
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string) error {
-	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security.LastPrice, input.Quantity, input.Direction, settings)
+	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security, input.Quantity, input.Direction, settings)
 
 	var position system.TradePosition
 	positionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error
@@ -317,6 +325,11 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 
 func loadMobileTradeSettings() (mobileTradeSettings, error) {
 	var result mobileTradeSettings
+	result.Trade.BuyCommission, result.Trade.SellCommission = 0.0003, 0.0003
+	result.Trade.MinCommission, result.Trade.StampDuty, result.Trade.TransferFee = 5, 0.0005, 0.0001
+	result.HKTrade.Commission, result.HKTrade.MinCommission = 0.00025, 15
+	result.HKTrade.StampDuty = 0.001
+	result.HKTrade.RegulatoryFee, result.HKTrade.TradingFee, result.HKTrade.SettlementFee = 0.000027, 0.0000565, 0.000042
 	result.Trade.MorningStart, result.Trade.MorningEnd = "09:30:00", "11:30:00"
 	result.Trade.AfternoonStart, result.Trade.AfternoonEnd = "13:00:00", "15:00:00"
 	result.Limits.MainBoard = 0.08
@@ -409,18 +422,44 @@ func isMobileTradingTime(now time.Time, morningStart, morningEnd, afternoonStart
 
 func roundMoney(value float64) float64 { return math.Round(value*100) / 100 }
 
-func calculateTradeFees(price, quantity float64, direction string, settings mobileTradeSettings) (amount, commission, transferFee, managementFee, stampDuty, totalFee float64) {
-	amount = roundMoney(price * quantity)
-	commissionRate := settings.Trade.BuyCommission
-	if direction == "卖出" {
-		commissionRate = settings.Trade.SellCommission
-	}
-	commission = roundMoney(math.Max(amount*commissionRate, settings.Trade.MinCommission))
-	transferFee = roundMoney(amount * settings.Trade.TransferFee)
-	managementFee = 0
-	if direction == "卖出" {
-		stampDuty = roundMoney(amount * settings.Trade.StampDuty)
+func calculateTradeFees(security system.StockSecurity, quantity float64, direction string, settings mobileTradeSettings) (amount, commission, transferFee, managementFee, stampDuty, totalFee float64) {
+	amount = roundMoney(security.LastPrice * quantity)
+	if isHongKongSecurity(security) {
+		commission = commissionAmount(amount, settings.HKTrade.Commission, settings.HKTrade.MinCommission)
+		if direction == "卖出" {
+			stampDuty = roundMoney(amount * settings.HKTrade.StampDuty)
+		}
+		transferFee = roundMoney(amount * (settings.HKTrade.RegulatoryFee + settings.HKTrade.TradingFee + settings.HKTrade.SettlementFee))
+	} else {
+		commissionRate := settings.Trade.BuyCommission
+		if direction == "卖出" {
+			commissionRate = settings.Trade.SellCommission
+		}
+		commission = commissionAmount(amount, commissionRate, settings.Trade.MinCommission)
+		if isShanghaiSecurity(security) {
+			transferFee = roundMoney(amount * settings.Trade.TransferFee)
+		}
+		if direction == "卖出" {
+			stampDuty = roundMoney(amount * settings.Trade.StampDuty)
+		}
 	}
 	totalFee = commission + transferFee + managementFee + stampDuty
 	return
+}
+
+func commissionAmount(amount, rate, minimum float64) float64 {
+	if rate <= 0 {
+		return 0
+	}
+	return roundMoney(math.Max(amount*rate, math.Max(0, minimum)))
+}
+
+func isHongKongSecurity(security system.StockSecurity) bool {
+	market := strings.ToUpper(strings.TrimSpace(security.Market + " " + security.Exchange + " " + security.Symbol))
+	return strings.Contains(market, "HK") || strings.Contains(market, "港")
+}
+
+func isShanghaiSecurity(security system.StockSecurity) bool {
+	market := strings.ToUpper(strings.TrimSpace(security.Market + " " + security.Exchange + " " + security.Symbol))
+	return strings.Contains(market, "SH") || strings.Contains(market, "沪") || strings.Contains(market, "上海")
 }

@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -49,5 +50,50 @@ func TestValidateSecurityTrade(t *testing.T) {
 				t.Fatalf("校验结果不符：message=%q, wantReject=%v", message, test.wantReject)
 			}
 		})
+	}
+}
+
+func TestCalculateTradeFees(t *testing.T) {
+	settings := mobileTradeSettings{}
+	settings.Trade.BuyCommission = 0.0003
+	settings.Trade.SellCommission = 0.0003
+	settings.Trade.MinCommission = 5
+	settings.Trade.StampDuty = 0.0005
+	settings.Trade.TransferFee = 0.0001
+	settings.HKTrade.Commission = 0.00025
+	settings.HKTrade.MinCommission = 15
+	settings.HKTrade.StampDuty = 0.001
+	settings.HKTrade.RegulatoryFee = 0.000027
+	settings.HKTrade.TradingFee = 0.0000565
+	settings.HKTrade.SettlementFee = 0.000042
+
+	tests := []struct {
+		name      string
+		security  system.StockSecurity
+		direction string
+		want      [6]float64
+	}{
+		{name: "沪市卖出", security: system.StockSecurity{Symbol: "600000.SH", LastPrice: 10}, direction: "卖出", want: [6]float64{1000, 5, 0.1, 0, 0.5, 5.6}},
+		{name: "深市买入", security: system.StockSecurity{Symbol: "000001.SZ", LastPrice: 10}, direction: "买入", want: [6]float64{1000, 5, 0, 0, 0, 5}},
+		{name: "港股卖出", security: system.StockSecurity{Symbol: "00700.HK", Market: "HK", LastPrice: 10}, direction: "卖出", want: [6]float64{1000, 15, 0.13, 0, 1, 16.13}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(test.security, 100, test.direction, settings)
+			values := [6]float64{amount, commission, transferFee, managementFee, stampDuty, totalFee}
+			for index := range values {
+				if math.Abs(values[index]-test.want[index]) > 0.000001 {
+					t.Fatalf("费用[%d]=%v，期望 %v", index, values[index], test.want[index])
+				}
+			}
+		})
+	}
+
+	settings.Trade.BuyCommission = 0
+	settings.Trade.MinCommission = 5
+	var commission float64
+	_, commission, _, _, _, _ = calculateTradeFees(system.StockSecurity{Symbol: "000001.SZ", LastPrice: 10}, 100, "买入", settings)
+	if commission != 0 {
+		t.Fatalf("佣金费率为 0 时应免收佣金，得到 %v", commission)
 	}
 }

@@ -92,7 +92,9 @@ func PlaceLimitOrder(c *gin.Context) {
 		}
 		order = system.LimitOrder{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
 		if input.Direction == "买入" {
-			amount, _, _, _, _, fee := calculateTradeFees(input.LimitPrice, input.Quantity, input.Direction, settings)
+			securityAtPrice := security
+			securityAtPrice.LastPrice = input.LimitPrice
+			amount, _, _, _, _, fee := calculateTradeFees(securityAtPrice, input.Quantity, input.Direction, settings)
 			leverage := effectiveLeverage(settings)
 			var existing system.TradePosition
 			if tx.Where("customer_id = ? AND symbol = ? AND position_qty > 0 AND deleted_at IS NULL", customer.ID, security.Symbol).First(&existing).Error == nil {

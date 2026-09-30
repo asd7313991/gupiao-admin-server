@@ -59,28 +59,20 @@ func processCustomerMarginCalls(customerID uint, startLoss, supplementRate float
 		}
 		requirements := make([]marginCallRequirement, 0)
 		totalRequired := float64(0)
-		startLevel := int(math.Floor(startLoss))
 		for index := range positions {
 			position := &positions[index]
 			refreshPositionMarketValue(tx, position)
-			lossRate := float64(0)
-			if position.TotalCost > 0 {
-				lossRate = math.Max(0, -position.ProfitLoss/position.TotalCost*100)
-			}
-			level := int(math.Floor(lossRate + 1e-9))
-			lastLevel := position.MarginCallLevel
-			if lastLevel < startLevel-1 {
-				lastLevel = startLevel - 1
-			}
-			if level <= lastLevel {
+			priceDropRate := positionPriceDropRate(*position)
+			from, to, ok := pendingMarginCallRange(priceDropRate, startLoss, position.MarginCallLevel)
+			if !ok {
 				continue
 			}
 			each := roundMoney(position.MarketValue * supplementRate)
 			if each <= 0 {
 				continue
 			}
-			requirements = append(requirements, marginCallRequirement{position: position, from: lastLevel + 1, to: level, each: each})
-			totalRequired = roundMoney(totalRequired + each*float64(level-lastLevel))
+			requirements = append(requirements, marginCallRequirement{position: position, from: from, to: to, each: each})
+			totalRequired = roundMoney(totalRequired + each*float64(to-from+1))
 		}
 		if len(requirements) == 0 {
 			return nil
@@ -133,4 +125,23 @@ func refreshPositionMarketValue(tx *gorm.DB, position *system.TradePosition) {
 	}
 	position.CurrentPrice = price
 	position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, price, position.TotalCost, positionLeverage(*position))
+}
+
+func positionPriceDropRate(position system.TradePosition) float64 {
+	if position.CostPrice <= 0 || position.CurrentPrice >= position.CostPrice {
+		return 0
+	}
+	return (position.CostPrice - position.CurrentPrice) / position.CostPrice * 100
+}
+
+func pendingMarginCallRange(priceDropRate, startLoss float64, lastLevel int) (from, to int, ok bool) {
+	startLevel := int(math.Floor(startLoss))
+	to = int(math.Floor(priceDropRate + 1e-9))
+	if lastLevel < startLevel-1 {
+		lastLevel = startLevel - 1
+	}
+	if to <= lastLevel {
+		return 0, 0, false
+	}
+	return lastLevel + 1, to, true
 }

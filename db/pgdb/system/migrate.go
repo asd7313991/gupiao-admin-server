@@ -443,6 +443,10 @@ func Migrate(db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
+	err = migrateMarginCallSettings(db)
+	if err != nil {
+		return err
+	}
 	err = migrateLeveragedPositions(db)
 	if err != nil {
 		return err
@@ -500,11 +504,34 @@ func migrateLeveragedPositions(db *gorm.DB) error {
 	})
 }
 
+func migrateMarginCallSettings(db *gorm.DB) error {
+	var setting AppSystemSetting
+	if err := db.First(&setting).Error; err != nil {
+		return err
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(setting.Config), &config); err != nil {
+		return err
+	}
+	risk, ok := config["risk"].(map[string]any)
+	if !ok {
+		risk = make(map[string]any)
+		config["risk"] = risk
+	}
+	risk["marginCallStart"] = float64(16)
+	risk["marginCallRate"] = 0.01
+	content, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	return db.Model(&setting).Update("config", string(content)).Error
+}
+
 func seedAppSystemSetting(db *gorm.DB) error {
 	var count int64
 	if err := db.Model(&AppSystemSetting{}).Count(&count).Error; err != nil || count > 0 {
 		return err
 	}
-	config := `{"branding":{"productName":"证券行情","logo":""},"trade":{"buyCommission":0.0003,"sellCommission":0.0003,"minCommission":5,"stampDuty":0.0005,"transferFee":0.0001,"morningStart":"09:30:00","morningEnd":"11:30:00","afternoonStart":"13:00:00","afternoonEnd":"15:00:00","allDay":false,"nonTradingFee":false},"hkTrade":{"commission":0.00025,"minCommission":15,"stampDuty":0.001,"regulatoryFee":0.000027,"tradingFee":0.0000565,"settlementFee":0.000042},"stockSync":{"enabled":true,"tradingIntervalSecs":60,"offHoursIntervalSecs":600,"maxSyncRows":10000},"risk":{"defaultLeverage":5,"forceCloseRatio":0.8,"appLeverageEnabled":true,"managementFeePerTenThousand":2.8,"marginCallStart":16,"marginCallRate":0.005},"recharge":{"minRecharge":5000,"quickAmounts":"5000,10000,100000,300000,500000,1000000","minWithdraw":100,"withdrawFeeRate":0,"minWithdrawFee":0,"dailyWithdrawLimit":1,"withdrawStart":"09:30:00","withdrawEnd":"15:00:00","sameDaySellWithdraw":true},"limits":{"starBoard":0.16,"beijingBoard":0.24,"mainBoard":0.08,"growthBoard":0.16,"minStarShares":200,"stTrade":false,"newStockTrade":false},"links":{"customerService":"https://service.example.com","hkdRate":0.89,"aQuote":"https://quotes.example.com/#/mobile/","hkQuote":"https://quotes.example.com/#/mobile/","telegramToken":"","telegramChatId":""}}`
+	config := `{"branding":{"productName":"证券行情","logo":""},"trade":{"buyCommission":0.0003,"sellCommission":0.0003,"minCommission":5,"stampDuty":0.0005,"transferFee":0.0001,"morningStart":"09:30:00","morningEnd":"11:30:00","afternoonStart":"13:00:00","afternoonEnd":"15:00:00","allDay":false,"nonTradingFee":false},"hkTrade":{"commission":0.00025,"minCommission":15,"stampDuty":0.001,"regulatoryFee":0.000027,"tradingFee":0.0000565,"settlementFee":0.000042},"stockSync":{"enabled":true,"tradingIntervalSecs":60,"offHoursIntervalSecs":600,"maxSyncRows":10000},"risk":{"defaultLeverage":5,"forceCloseRatio":0.8,"appLeverageEnabled":true,"managementFeePerTenThousand":2.8,"marginCallStart":16,"marginCallRate":0.01},"recharge":{"minRecharge":5000,"quickAmounts":"5000,10000,100000,300000,500000,1000000","minWithdraw":100,"withdrawFeeRate":0,"minWithdrawFee":0,"dailyWithdrawLimit":1,"withdrawStart":"09:30:00","withdrawEnd":"15:00:00","sameDaySellWithdraw":true},"limits":{"starBoard":0.16,"beijingBoard":0.24,"mainBoard":0.08,"growthBoard":0.16,"minStarShares":200,"stTrade":false,"newStockTrade":false},"links":{"customerService":"https://service.example.com","hkdRate":0.89,"aQuote":"https://quotes.example.com/#/mobile/","hkQuote":"https://quotes.example.com/#/mobile/","telegramToken":"","telegramChatId":""}}`
 	return db.Create(&AppSystemSetting{Config: config}).Error
 }

@@ -34,7 +34,7 @@ func TestMarginCallsSupplementAndForceClose(t *testing.T) {
 			t.Fatal(err)
 		}
 		beforeBalance, beforeMargin := customer.Balance, position.Margin
-		count, forced, err := processCustomerMarginCalls(customer.ID, 16, 0.005, time.Now())
+		count, forced, err := processCustomerMarginCalls(customer.ID, 16, 0.01, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +47,7 @@ func TestMarginCallsSupplementAndForceClose(t *testing.T) {
 		if err := db.First(&position, position.ID).Error; err != nil {
 			t.Fatal(err)
 		}
-		each := roundMoney(position.MarketValue * 0.005)
+		each := roundMoney(position.MarketValue * 0.01)
 		if math.Abs(customer.Balance-(beforeBalance-each*3)) > 0.001 || math.Abs(position.Margin-(beforeMargin+each*3)) > 0.001 || position.MarginCallLevel != 18 {
 			t.Fatalf("unexpected supplement result: balance=%v margin=%v level=%d", customer.Balance, position.Margin, position.MarginCallLevel)
 		}
@@ -56,7 +56,7 @@ func TestMarginCallsSupplementAndForceClose(t *testing.T) {
 		if flowCount != 3 {
 			t.Fatalf("flow count=%d, want 3", flowCount)
 		}
-		count, forced, err = processCustomerMarginCalls(customer.ID, 16, 0.005, time.Now())
+		count, forced, err = processCustomerMarginCalls(customer.ID, 16, 0.01, time.Now())
 		if err != nil || forced || count != 0 {
 			t.Fatalf("repeat call count=%d forced=%v err=%v", count, forced, err)
 		}
@@ -77,7 +77,7 @@ func TestMarginCallsSupplementAndForceClose(t *testing.T) {
 		if err := db.Create(&second).Error; err != nil {
 			t.Fatal(err)
 		}
-		count, forced, err := processCustomerMarginCalls(customer.ID, 16, 0.005, time.Now())
+		count, forced, err := processCustomerMarginCalls(customer.ID, 16, 0.01, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,7 +101,7 @@ func marginCallTestPosition(customerID uint, security system.StockSecurity, loss
 	principalValue := roundMoney(security.LastPrice * 100)
 	totalCost := principalValue
 	if lossRate > 0 {
-		totalCost = roundMoney(principalValue / (1 - lossRate/500))
+		totalCost = roundMoney(principalValue / (1 - lossRate/100))
 	}
 	marketValue, profitLoss, profitRate := calculatePositionValues(100, security.LastPrice, totalCost, 5)
 	return system.TradePosition{CustomerID: customerID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: totalCost / 100, TotalCost: totalCost, Margin: totalCost, Leverage: 5, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}

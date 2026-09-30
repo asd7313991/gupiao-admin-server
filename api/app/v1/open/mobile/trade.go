@@ -328,7 +328,7 @@ func loadMobileTradeSettings() (mobileTradeSettings, error) {
 	result.Limits.MinStarShares = 200
 	result.Risk.DefaultLeverage = 5
 	result.Risk.MarginCallStart = 16
-	result.Risk.MarginCallRate = 0.005
+	result.Risk.MarginCallRate = 0.01
 	var row system.AppSystemSetting
 	if err := pgdb.GetClient().First(&row).Error; err != nil {
 		return result, err

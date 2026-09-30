@@ -105,6 +105,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	tradeGroup.POST("/positions", platformTrade.SavePosition)
 	tradeGroup.PUT("/positions", platformTrade.SavePosition)
 	tradeGroup.DELETE("/positions", platformTrade.DeletePosition)
+	tradeGroup.POST("/positions/force-close", platformTrade.ForceClosePosition)
 	tradeGroup.GET("/records", platformTrade.ListRecords)
 	tradeGroup.POST("/records", platformTrade.SaveRecord)
 	tradeGroup.PUT("/records", platformTrade.SaveRecord)

@@ -17,7 +17,7 @@ import (
 
 func ListPositions(c *gin.Context) {
 	var items []system.TradePosition
-	db := pgdb.GetClient().Order("id DESC")
+	db := pgdb.GetClient().Where("trade_positions.position_qty > 0").Order("trade_positions.id DESC")
 	if phone := c.Query("phone"); phone != "" {
 		db = db.Joins("JOIN customers ON customers.id = trade_positions.customer_id").Where("customers.phone LIKE ?", "%"+phone+"%")
 	}

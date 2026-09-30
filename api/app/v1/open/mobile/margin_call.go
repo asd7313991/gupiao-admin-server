@@ -132,9 +132,5 @@ func refreshPositionMarketValue(tx *gorm.DB, position *system.TradePosition) {
 		price = security.LastPrice
 	}
 	position.CurrentPrice = price
-	position.MarketValue = roundMoney(position.PositionQty * price)
-	position.ProfitLoss = roundMoney(position.MarketValue - position.TotalCost)
-	if position.TotalCost > 0 {
-		position.ProfitRate = position.ProfitLoss / position.TotalCost * 100
-	}
+	position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, price, position.TotalCost, positionLeverage(*position))
 }

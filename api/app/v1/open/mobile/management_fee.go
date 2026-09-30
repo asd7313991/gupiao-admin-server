@@ -102,7 +102,7 @@ func currentPositionsMarketValue(tx *gorm.DB, positions []system.TradePosition) 
 			price = security.LastPrice
 		}
 		position.CurrentPrice = price
-		position.MarketValue = roundMoney(position.PositionQty * price)
+		position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, price, position.TotalCost, positionLeverage(*position))
 		total += position.MarketValue
 	}
 	return roundMoney(total)
@@ -149,7 +149,7 @@ func forceCloseAllPositions(tx *gorm.DB, customer *system.Customer, positions []
 			price = security.LastPrice
 		}
 		amount := roundMoney(price * position.PositionQty)
-		realized := roundMoney(amount - position.TotalCost)
+		realized := roundMoney((amount - position.TotalCost) * positionLeverage(*position))
 		customer.Balance = roundMoney(customer.Balance + position.Margin + realized)
 		if realized >= 0 {
 			customer.TotalProfit = roundMoney(customer.TotalProfit + realized)

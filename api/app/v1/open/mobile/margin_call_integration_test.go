@@ -98,10 +98,11 @@ func TestMarginCallsSupplementAndForceClose(t *testing.T) {
 }
 
 func marginCallTestPosition(customerID uint, security system.StockSecurity, lossRate float64) system.TradePosition {
-	marketValue := roundMoney(security.LastPrice * 100)
-	totalCost := marketValue
+	principalValue := roundMoney(security.LastPrice * 100)
+	totalCost := principalValue
 	if lossRate > 0 {
-		totalCost = roundMoney(marketValue / (1 - lossRate/100))
+		totalCost = roundMoney(principalValue / (1 - lossRate/500))
 	}
-	return system.TradePosition{CustomerID: customerID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: totalCost / 100, TotalCost: totalCost, Margin: roundMoney(totalCost / 5), Leverage: 5, MarketValue: marketValue, ProfitLoss: marketValue - totalCost, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
+	marketValue, profitLoss, profitRate := calculatePositionValues(100, security.LastPrice, totalCost, 5)
+	return system.TradePosition{CustomerID: customerID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: totalCost / 100, TotalCost: totalCost, Margin: totalCost, Leverage: 5, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
 }

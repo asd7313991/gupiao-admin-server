@@ -134,16 +134,11 @@ func ListCustomerPositions(c *gin.Context) {
 		if pgdb.GetClient().Where("symbol = ?", item.Symbol).First(&security).Error == nil && security.LastPrice > 0 {
 			price = security.LastPrice
 		}
-		marketValue := item.PositionQty * price
-		profitLoss := marketValue - item.TotalCost
-		profitRate := float64(0)
-		if item.TotalCost > 0 {
-			profitRate = profitLoss / item.TotalCost * 100
-		}
 		leverage := positionLeverage(item)
+		marketValue, profitLoss, profitRate := calculatePositionValues(item.PositionQty, price, item.TotalCost, leverage)
 		margin := item.Margin
 		if margin <= 0 && item.TotalCost > 0 {
-			margin = roundMoney(item.TotalCost / leverage)
+			margin = roundMoney(item.TotalCost)
 		}
 		views = append(views, tradePositionView{ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
 	}
@@ -242,7 +237,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		if positionErr == nil && position.Leverage > 0 {
 			leverage = position.Leverage
 		}
-		margin := roundMoney(amount / leverage)
+		margin := roundMoney(amount)
 		totalDebit := margin + totalFee
 		if customer.Balance < totalDebit {
 			*rejection = fmt.Sprintf("余额不足，还需 %.2f 元", totalDebit-customer.Balance)
@@ -255,7 +250,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			return positionErr
 		}
 		newQty := position.PositionQty + input.Quantity
-		position.TotalCost += amount + totalFee
+		position.TotalCost = roundMoney(position.TotalCost + amount)
 		position.Margin = roundMoney(position.Margin + margin)
 		position.Leverage = leverage
 		position.MarginCallLevel = 0
@@ -276,7 +271,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		if input.Quantity < positionQtyBefore {
 			marginRemoved = roundMoney(position.Margin * input.Quantity / positionQtyBefore)
 		}
-		realized := amount - totalFee - costRemoved
+		realized := roundMoney((amount-costRemoved)*positionLeverage(position) - totalFee)
 		customer.Balance = roundMoney(customer.Balance + marginRemoved + realized)
 		if realized >= 0 {
 			customer.TotalProfit += realized
@@ -292,13 +287,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		}
 	}
 	position.CurrentPrice = security.LastPrice
-	position.MarketValue = position.PositionQty * position.CurrentPrice
-	position.ProfitLoss = position.MarketValue - position.TotalCost
-	if position.TotalCost > 0 {
-		position.ProfitRate = position.ProfitLoss / position.TotalCost * 100
-	} else {
-		position.ProfitRate = 0
-	}
+	position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, position.CurrentPrice, position.TotalCost, positionLeverage(position))
 	if err := tx.Save(customer).Error; err != nil {
 		return err
 	}
@@ -366,6 +355,19 @@ func positionLeverage(position system.TradePosition) float64 {
 		return position.Leverage
 	}
 	return 1
+}
+
+func calculatePositionValues(quantity, currentPrice, totalCost, leverage float64) (marketValue, profitLoss, profitRate float64) {
+	if leverage < 1 {
+		leverage = 1
+	}
+	principalValue := quantity * currentPrice
+	marketValue = roundMoney(principalValue * leverage)
+	profitLoss = roundMoney((principalValue - totalCost) * leverage)
+	if totalCost > 0 {
+		profitRate = profitLoss / totalCost * 100
+	}
+	return marketValue, profitLoss, profitRate
 }
 
 func validateSecurityTrade(security system.StockSecurity, input orderInput, settings mobileTradeSettings) string {

@@ -95,12 +95,7 @@ func PlaceLimitOrder(c *gin.Context) {
 			securityAtPrice := security
 			securityAtPrice.LastPrice = input.LimitPrice
 			amount, _, _, _, _, fee := calculateTradeFees(securityAtPrice, input.Quantity, input.Direction, settings)
-			leverage := effectiveLeverage(settings)
-			var existing system.TradePosition
-			if tx.Where("customer_id = ? AND symbol = ? AND position_qty > 0 AND deleted_at IS NULL", customer.ID, security.Symbol).First(&existing).Error == nil {
-				leverage = positionLeverage(existing)
-			}
-			order.FrozenAmount = roundMoney(amount/leverage + fee)
+			order.FrozenAmount = roundMoney(amount + fee)
 			if customer.Balance < order.FrozenAmount {
 				rejection = fmt.Sprintf("可用余额不足，还需 %.2f 元", order.FrozenAmount-customer.Balance)
 				return errTradeRejected

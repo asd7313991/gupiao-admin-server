@@ -33,7 +33,7 @@ func TestManagementFeeForcesCloseWhenBalanceIsInsufficient(t *testing.T) {
 	}
 	defer cleanupManagementFeeProbe(db, customer.ID)
 	amount := roundMoney(security.LastPrice * 100)
-	position := system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: security.LastPrice, TotalCost: amount, Margin: roundMoney(amount / 5), Leverage: 5, MarketValue: amount, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
+	position := system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: security.LastPrice, TotalCost: amount, Margin: amount, Leverage: 5, MarketValue: amount * 5, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
 	if err := db.Create(&position).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestManagementFeeForcesCloseWhenBalanceIsInsufficient(t *testing.T) {
 	if err := db.First(&customer, customer.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	wantBalance := roundMoney(amount/5 - dailyManagementFee(amount, 0.00028))
+	wantBalance := roundMoney(amount - dailyManagementFee(amount*5, 0.00028))
 	if math.Abs(customer.Balance-wantBalance) > 0.001 {
 		t.Fatalf("balance=%v want=%v", customer.Balance, wantBalance)
 	}

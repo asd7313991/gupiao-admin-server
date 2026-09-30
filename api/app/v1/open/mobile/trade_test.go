@@ -100,3 +100,15 @@ func TestCalculateTradeFees(t *testing.T) {
 		t.Fatalf("佣金费率为 0 时应免收佣金，得到 %v", commission)
 	}
 }
+
+func TestCalculatePositionValuesOnlyAmplifiesMarketValueAndProfit(t *testing.T) {
+	marketValue, profitLoss, profitRate := calculatePositionValues(100, 10, 1000, 5)
+	if marketValue != 5000 || profitLoss != 0 || profitRate != 0 {
+		t.Fatalf("买入后数值不符：市值=%v，盈亏=%v，盈亏率=%v", marketValue, profitLoss, profitRate)
+	}
+
+	marketValue, profitLoss, profitRate = calculatePositionValues(100, 11, 1000, 5)
+	if marketValue != 5500 || profitLoss != 500 || profitRate != 50 {
+		t.Fatalf("上涨后数值不符：市值=%v，盈亏=%v，盈亏率=%v", marketValue, profitLoss, profitRate)
+	}
+}

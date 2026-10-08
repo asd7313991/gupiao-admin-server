@@ -84,6 +84,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	customerGroup := group.Group("/customer", middleware.PlatformMenuAccess)
 	customerGroup.GET("", customer.List)
 	customerGroup.GET("/detail", customer.Detail)
+	customerGroup.GET("/verification-video", customer.VerificationVideo)
 	customerGroup.POST("", customer.Create)
 	customerGroup.PUT("", customer.Update)
 	customerGroup.DELETE("", customer.Delete)

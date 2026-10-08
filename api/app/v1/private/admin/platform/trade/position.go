@@ -3,6 +3,7 @@ package trade
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -40,11 +41,52 @@ func ListPositions(c *gin.Context) {
 func SavePosition(c *gin.Context) {
 	var input struct {
 		system.TradePosition
-		RecordChange bool `json:"record_change"`
+		RecordChange bool   `json:"record_change"`
+		Phone        string `json:"phone"`
 	}
-	if !middleware.CheckParam(&input, c) || input.CustomerID == 0 || input.Symbol == "" {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和证券代码为必填项")
+	if !middleware.CheckParam(&input, c) || input.Symbol == "" {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "证券代码为必填项")
 		return
+	}
+	if input.ID == 0 {
+		phone := strings.TrimSpace(input.Phone)
+		if phone == "" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "手机号为必填项")
+			return
+		}
+
+		var customer system.Customer
+		if err := pgdb.GetClient().Where("phone = ?", phone).First(&customer).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				response.ReturnError(c, response.NOT_FOUND, "客户不存在")
+				return
+			}
+			response.ReturnError(c, response.DATA_LOSS, "查询客户失败")
+			return
+		}
+
+		var security system.StockSecurity
+		if err := pgdb.GetClient().
+			Where("code IN ? OR symbol IN ?", securityLookupValues(input.Symbol), securityLookupValues(input.Symbol)).
+			First(&security).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				response.ReturnError(c, response.NOT_FOUND, "证券不存在")
+				return
+			}
+			response.ReturnError(c, response.DATA_LOSS, "查询证券失败")
+			return
+		}
+
+		input.CustomerID = customer.ID
+		input.Symbol = security.Symbol
+		input.StockName = security.Name
+		input.Currency = "CNY"
+		input.AvailableQty = input.PositionQty
+		input.CurrentPrice = security.LastPrice
+		if input.CurrentPrice <= 0 {
+			input.CurrentPrice = input.CostPrice
+		}
+		input.Leverage = 1
 	}
 	if input.BuyAt == 0 {
 		input.BuyAt = time.Now().Unix()
@@ -80,6 +122,19 @@ func SavePosition(c *gin.Context) {
 		}
 	}
 	response.ReturnData(c, input.TradePosition)
+}
+
+func securityLookupValues(value string) []string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if normalized == "" {
+		return nil
+	}
+
+	values := []string{normalized}
+	if len(normalized) == 8 && (strings.HasPrefix(normalized, "SH") || strings.HasPrefix(normalized, "SZ")) {
+		values = append(values, normalized[2:]+"."+normalized[:2])
+	}
+	return values
 }
 
 func DeletePosition(c *gin.Context) {

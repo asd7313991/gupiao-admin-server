@@ -46,14 +46,14 @@ type customerResponse struct {
 }
 
 func toResponse(customer system.Customer) customerResponse {
-	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: customer.VerificationVideo, VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
 }
 
 func materialDataURL(path string) string {
 	if path == "" || !filepath.IsAbs(path) {
 		return path
 	}
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(config.VerificationStorageDir)+string(os.PathSeparator)) {
+	if !isVerificationMaterial(path) {
 		return ""
 	}
 	data, err := os.ReadFile(path)
@@ -65,6 +65,30 @@ func materialDataURL(path string) string {
 		mime = "image/png"
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func verificationVideoURL(customer system.Customer) string {
+	if !isVerificationMaterial(customer.VerificationVideo) {
+		return ""
+	}
+	return fmt.Sprintf("/server-api/private/admin/platform/customer/verification-video?id=%d", customer.ID)
+}
+
+func VerificationVideo(c *gin.Context) {
+	customer, ok := getCustomer(c)
+	if !ok {
+		return
+	}
+	if !isVerificationMaterial(customer.VerificationVideo) {
+		response.ReturnError(c, response.NOT_FOUND, "认证视频不存在")
+		return
+	}
+	c.File(customer.VerificationVideo)
+}
+
+func isVerificationMaterial(path string) bool {
+	return path != "" && filepath.IsAbs(path) &&
+		strings.HasPrefix(filepath.Clean(path), filepath.Clean(config.VerificationStorageDir)+string(os.PathSeparator))
 }
 
 func List(c *gin.Context) {
@@ -378,14 +402,23 @@ func BatchSetDeviceBlocked(c *gin.Context) {
 	response.ReturnData(c, gin.H{"updated": result.RowsAffected})
 }
 func Delete(c *gin.Context) {
-	customer, ok := getCustomer(c)
-	if ok {
-		if err := pgdb.GetClient().Delete(&customer).Error; err != nil {
-			response.ReturnError(c, response.DATA_LOSS, "删除客户失败")
-			return
-		}
-		response.ReturnData(c, nil)
+	var input struct {
+		ID uint `json:"id"`
 	}
+	if !middleware.CheckParam(&input, c) || input.ID == 0 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "客户 ID 无效")
+		return
+	}
+	var customer system.Customer
+	if err := pgdb.GetClient().First(&customer, input.ID).Error; err != nil {
+		response.ReturnError(c, response.NOT_FOUND, "客户不存在")
+		return
+	}
+	if err := pgdb.GetClient().Delete(&customer).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "删除客户失败")
+		return
+	}
+	response.ReturnData(c, nil)
 }
 
 func getCustomer(c *gin.Context) (system.Customer, bool) {

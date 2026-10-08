@@ -40,6 +40,7 @@ type verificationStatusView struct {
 	BankCardMasked string `json:"bank_card_masked"`
 	HasFront       bool   `json:"has_front"`
 	HasBack        bool   `json:"has_back"`
+	HasVideo       bool   `json:"has_video"`
 	HasTradePIN    bool   `json:"has_trade_pin"`
 	Remark         string `json:"remark"`
 	FaceConfigured bool   `json:"face_configured"`
@@ -53,20 +54,24 @@ func VerificationStatus(c *gin.Context) {
 	response.ReturnData(c, verificationStatusView{
 		Verified: item.Verified, Name: item.Name, IDCardMasked: mask(item.IDCard, 6, 4),
 		BankName: item.BankName, BankCardMasked: mask(item.BankCard, 4, 4), HasFront: item.IDCardFront != "",
-		HasBack: item.IDCardBack != "", HasTradePIN: item.TradePassword != "", Remark: item.VerificationRemark,
+		HasBack: item.IDCardBack != "", HasVideo: item.VerificationVideo != "", HasTradePIN: item.TradePassword != "", Remark: item.VerificationRemark,
 		FaceConfigured: faceRecognitionConfigured(),
 	})
 }
 
 func UploadVerificationMaterial(c *gin.Context) {
 	kind := strings.TrimSpace(c.PostForm("kind"))
-	if kind != "front" && kind != "back" {
+	if kind != "front" && kind != "back" && kind != "video" {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "材料类型无效")
 		return
 	}
 	file, err := c.FormFile("file")
-	if err != nil || file.Size <= 0 || file.Size > 8*1024*1024 {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择不超过 8MB 的身份证照片")
+	maxSize := int64(8 * 1024 * 1024)
+	if kind == "video" {
+		maxSize = 50 * 1024 * 1024
+	}
+	if err != nil || file.Size <= 0 || file.Size > maxSize {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择符合大小限制的认证材料")
 		return
 	}
 	source, err := file.Open()
@@ -78,9 +83,13 @@ func UploadVerificationMaterial(c *gin.Context) {
 	header := make([]byte, 512)
 	read, _ := source.Read(header)
 	contentType := http.DetectContentType(header[:read])
-	extension := map[string]string{"image/jpeg": ".jpg", "image/png": ".png"}[contentType]
+	extensions := map[string]string{"image/jpeg": ".jpg", "image/png": ".png"}
+	if kind == "video" {
+		extensions = map[string]string{"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}
+	}
+	extension := extensions[contentType]
 	if extension == "" {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "仅支持 JPEG 或 PNG 身份证照片")
+		response.ReturnError(c, response.INVALID_ARGUMENT, "认证照片仅支持 JPEG 或 PNG，认证视频仅支持 MP4、WebM 或 MOV")
 		return
 	}
 	if config.VerificationStorageDir == "" {
@@ -106,6 +115,8 @@ func UploadVerificationMaterial(c *gin.Context) {
 	field := "id_card_front"
 	if kind == "back" {
 		field = "id_card_back"
+	} else if kind == "video" {
+		field = "verification_video"
 	}
 	var previous string
 	var customer system.Customer
@@ -116,8 +127,10 @@ func UploadVerificationMaterial(c *gin.Context) {
 	}
 	if kind == "front" {
 		previous = customer.IDCardFront
-	} else {
+	} else if kind == "back" {
 		previous = customer.IDCardBack
+	} else {
+		previous = customer.VerificationVideo
 	}
 	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
 	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
@@ -418,8 +431,10 @@ func extractIDCard(path string) (string, string, error) {
 	}
 	defer result.Body.Close()
 	var ocr struct {
-		ErrorCode int `json:"error_code"`
-		WordsResult map[string]struct{ Words string `json:"words"` } `json:"words_result"`
+		ErrorCode   int `json:"error_code"`
+		WordsResult map[string]struct {
+			Words string `json:"words"`
+		} `json:"words_result"`
 	}
 	if err := json.NewDecoder(result.Body).Decode(&ocr); err != nil || ocr.ErrorCode != 0 {
 		return "", "", fmt.Errorf("百度身份证识别失败")

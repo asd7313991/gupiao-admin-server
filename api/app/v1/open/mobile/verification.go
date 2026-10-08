@@ -59,6 +59,30 @@ func VerificationStatus(c *gin.Context) {
 	})
 }
 
+func VerificationMaterial(c *gin.Context) {
+	item, ok := currentVerificationCustomer(c)
+	if !ok {
+		return
+	}
+	var path string
+	switch c.Param("kind") {
+	case "front":
+		path = item.IDCardFront
+	case "back":
+		path = item.IDCardBack
+	case "video":
+		path = item.VerificationVideo
+	default:
+		response.ReturnError(c, response.INVALID_ARGUMENT, "材料类型无效")
+		return
+	}
+	if !isVerificationMaterialPath(path) {
+		response.ReturnError(c, response.NOT_FOUND, "认证材料不存在")
+		return
+	}
+	c.File(path)
+}
+
 func UploadVerificationMaterial(c *gin.Context) {
 	kind := strings.TrimSpace(c.PostForm("kind"))
 	if kind != "front" && kind != "back" && kind != "video" {
@@ -418,6 +442,14 @@ func currentVerificationCustomer(c *gin.Context) (system.Customer, bool) {
 		return item, false
 	}
 	return item, true
+}
+
+func isVerificationMaterialPath(path string) bool {
+	if path == "" || config.VerificationStorageDir == "" {
+		return false
+	}
+	relative, err := filepath.Rel(filepath.Clean(config.VerificationStorageDir), filepath.Clean(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func faceRecognitionConfigured() bool {

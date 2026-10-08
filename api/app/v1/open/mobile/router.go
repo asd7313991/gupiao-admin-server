@@ -37,6 +37,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	account.DELETE("/trade/limit-orders/:id", CancelLimitOrder)
 	account.PUT("/profile/login-password", UpdateLoginPassword)
 	account.GET("/verification/status", VerificationStatus)
+	account.GET("/verification/material/:kind", VerificationMaterial)
 	account.POST("/verification/material", UploadVerificationMaterial)
 	account.PUT("/verification/identity", SaveVerificationIdentity)
 	account.PUT("/verification/profile", SaveVerificationProfile)

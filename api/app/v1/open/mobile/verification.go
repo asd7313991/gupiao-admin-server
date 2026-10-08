@@ -282,6 +282,43 @@ func UpdateVerificationTradePassword(c *gin.Context) {
 	response.ReturnData(c, nil)
 }
 
+func SetupVerificationTradePassword(c *gin.Context) {
+	var input struct {
+		NewPIN     string `json:"new_trade_pin"`
+		ConfirmPIN string `json:"confirm_trade_pin"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "交易密码格式无效")
+		return
+	}
+	item, ok := currentVerificationCustomer(c)
+	if !ok {
+		return
+	}
+	if item.Verified != system.StatusEnabled {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先完成实名认证")
+		return
+	}
+	if item.TradePassword != "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "资金密码已设置，请通过修改资金密码更新")
+		return
+	}
+	if !tradePINPattern.MatchString(input.NewPIN) || input.NewPIN != input.ConfirmPIN {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "资金密码必须为两次一致的 6 位数字")
+		return
+	}
+	hash, err := system.HashPassword(input.NewPIN)
+	if err != nil {
+		response.ReturnError(c, response.INTERNAL, "资金密码加密失败")
+		return
+	}
+	if err := pgdb.GetClient().Model(&item).Update("trade_password", hash).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "设置资金密码失败")
+		return
+	}
+	response.ReturnData(c, nil)
+}
+
 func StartFaceVerification(c *gin.Context) {
 	if !faceRecognitionConfigured() {
 		response.ReturnError(c, response.UNAVAILABLE, "百度云人脸实名认证服务未配置")

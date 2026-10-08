@@ -7,6 +7,8 @@ import (
 
 	"api-server/api/auth"
 	"api-server/api/response"
+	"api-server/db/pgdb"
+	"api-server/db/pgdb/system"
 )
 
 func CustomerTokenVerify(c *gin.Context) {
@@ -18,6 +20,11 @@ func CustomerTokenVerify(c *gin.Context) {
 	claims, err := auth.CustomerJWTDecrypt(token)
 	if err != nil {
 		response.ReturnError(c, response.UNAUTHENTICATED, "登录已过期，请重新登录")
+		return
+	}
+	var customer system.Customer
+	if err := pgdb.GetClient().Select("id").First(&customer, claims.CustomerID).Error; err != nil {
+		response.ReturnError(c, response.UNAUTHENTICATED, "账户不存在或已被删除，请重新登录")
 		return
 	}
 	c.Set("customer_id", claims.CustomerID)

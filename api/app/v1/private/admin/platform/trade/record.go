@@ -12,9 +12,22 @@ import (
 )
 
 type recordResponse struct {
-	system.TradeRecord
-	CustomerName  string `json:"customer_name"`
-	CustomerPhone string `json:"customer_phone"`
+	ID            uint    `json:"id"`
+	CustomerID    uint    `json:"customer_id"`
+	Symbol        string  `json:"symbol"`
+	StockName     string  `json:"stock_name"`
+	Currency      string  `json:"currency"`
+	Direction     string  `json:"direction"`
+	TradePrice    float64 `json:"trade_price"`
+	Quantity      float64 `json:"quantity"`
+	Amount        float64 `json:"amount"`
+	StampDuty     float64 `json:"stamp_duty"`
+	TransferFee   float64 `json:"transfer_fee"`
+	Commission    float64 `json:"commission"`
+	Remark        string  `json:"remark"`
+	TradeAt       int64   `json:"trade_at"`
+	CustomerName  string  `json:"customer_name"`
+	CustomerPhone string  `json:"customer_phone"`
 }
 
 func ListRecords(c *gin.Context) {

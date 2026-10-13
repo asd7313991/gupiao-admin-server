@@ -218,13 +218,19 @@ func SaveVerificationIdentity(c *gin.Context) {
 		return
 	}
 	input.Name, input.IDCard = strings.TrimSpace(input.Name), strings.ToUpper(strings.TrimSpace(input.IDCard))
-	if input.Name == "" || !idCardPattern.MatchString(input.IDCard) {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "请输入正确的姓名和身份证号")
-		return
-	}
 	var customer system.Customer
 	if err := pgdb.GetClient().First(&customer, middleware.GetCurrentCustomerID(c)).Error; err != nil {
 		response.ReturnError(c, response.NOT_FOUND, "用户不存在")
+		return
+	}
+	if input.Name == "" {
+		input.Name = customer.Name
+	}
+	if input.IDCard == "" {
+		input.IDCard = customer.IDCard
+	}
+	if input.Name == "" || !idCardPattern.MatchString(input.IDCard) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请输入正确的姓名和身份证号")
 		return
 	}
 	if customer.IDCardFront == "" || customer.IDCardBack == "" {

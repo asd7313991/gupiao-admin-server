@@ -87,6 +87,14 @@ func VerificationVideo(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "认证视频不存在")
 		return
 	}
+	if _, err := os.Stat(customer.VerificationVideo); err != nil {
+		if os.IsNotExist(err) {
+			response.ReturnError(c, response.NOT_FOUND, "认证视频文件不存在")
+			return
+		}
+		response.ReturnError(c, response.DATA_LOSS, "读取认证视频失败")
+		return
+	}
 	c.File(customer.VerificationVideo)
 }
 

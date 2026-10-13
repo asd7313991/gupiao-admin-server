@@ -237,9 +237,11 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		if err := tx.Where("symbol = ? AND status = ?", order.Symbol, system.StatusEnabled).First(&security).Error; err != nil {
 			return err
 		}
-		if (order.Direction == "买入" && security.LastPrice > order.LimitPrice) || (order.Direction == "卖出" && security.LastPrice < order.LimitPrice) {
+		matchPrice, matched := limitOrderMatchPrice(order, security)
+		if !matched {
 			return nil
 		}
+		security.LastPrice = matchPrice
 		tradeInput := orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}
 		if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
 			if err := releaseLimitOrderFreeze(tx, &order); err != nil {
@@ -285,6 +287,31 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		return nil
 	})
 	return matched, err
+}
+
+func limitOrderMatchPrice(order system.LimitOrder, security system.StockSecurity) (float64, bool) {
+	book, err := fetchOrderBook(security)
+	if err != nil {
+		return 0, false
+	}
+	return matchPriceFromOrderBook(order, book)
+}
+
+func matchPriceFromOrderBook(order system.LimitOrder, book orderBookView) (float64, bool) {
+	if order.Direction == "买入" {
+		for _, level := range book.Ask {
+			if level.Price > 0 && level.Volume > 0 && level.Price <= order.LimitPrice {
+				return level.Price, true
+			}
+		}
+		return 0, false
+	}
+	for _, level := range book.Bid {
+		if level.Price > 0 && level.Volume > 0 && level.Price >= order.LimitPrice {
+			return level.Price, true
+		}
+	}
+	return 0, false
 }
 
 func releaseLimitOrderFreeze(tx *gorm.DB, order *system.LimitOrder) error {

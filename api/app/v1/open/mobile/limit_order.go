@@ -73,6 +73,15 @@ func PlaceLimitOrder(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "证券不可交易")
 		return
 	}
+	book, err := fetchOrderBook(security)
+	if err != nil {
+		response.ReturnError(c, response.UNAVAILABLE, "盘口数据暂时不可用，请稍后重试")
+		return
+	}
+	if message := validateLimitOrderPrice(input, book); message != "" {
+		response.ReturnError(c, response.INVALID_ARGUMENT, message)
+		return
+	}
 	tradeInput := orderInput{Code: input.Code, Direction: input.Direction, Quantity: input.Quantity}
 	if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
 		response.ReturnError(c, response.FAILED_PRECONDITION, message)
@@ -312,6 +321,16 @@ func matchPriceFromOrderBook(order system.LimitOrder, book orderBookView) (float
 		}
 	}
 	return 0, false
+}
+
+func validateLimitOrderPrice(input limitOrderInput, book orderBookView) string {
+	if book.LimitDown <= 0 || book.LimitUp <= 0 {
+		return ""
+	}
+	if input.LimitPrice < book.LimitDown || input.LimitPrice > book.LimitUp {
+		return fmt.Sprintf("委托价格必须在 %.2f 至 %.2f 之间", book.LimitDown, book.LimitUp)
+	}
+	return ""
 }
 
 func releaseLimitOrderFreeze(tx *gorm.DB, order *system.LimitOrder) error {

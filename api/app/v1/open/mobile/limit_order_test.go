@@ -51,3 +51,26 @@ func TestMatchPriceFromOrderBook(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateLimitOrderPrice(t *testing.T) {
+	book := orderBookView{LimitDown: 10.79, LimitUp: 11.93}
+	tests := []struct {
+		name  string
+		price float64
+		want  bool
+	}{
+		{name: "price at lower limit is valid", price: 10.79},
+		{name: "price at upper limit is valid", price: 11.93},
+		{name: "price below lower limit is rejected", price: 10.00, want: true},
+		{name: "price above upper limit is rejected", price: 12.00, want: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := validateLimitOrderPrice(limitOrderInput{LimitPrice: test.price}, book)
+			if (message != "") != test.want {
+				t.Fatalf("validateLimitOrderPrice() = %q, rejection expected: %v", message, test.want)
+			}
+		})
+	}
+}

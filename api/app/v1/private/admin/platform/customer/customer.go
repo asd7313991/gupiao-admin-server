@@ -46,7 +46,11 @@ type customerResponse struct {
 }
 
 func toResponse(customer system.Customer) customerResponse {
-	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+	verified := customer.Verified
+	if !hasIdentityMaterials(customer) {
+		verified = system.StatusDisabled
+	}
+	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
 }
 
 func materialDataURL(path string) string {
@@ -89,6 +93,10 @@ func VerificationVideo(c *gin.Context) {
 func isVerificationMaterial(path string) bool {
 	return path != "" && filepath.IsAbs(path) &&
 		strings.HasPrefix(filepath.Clean(path), filepath.Clean(config.VerificationStorageDir)+string(os.PathSeparator))
+}
+
+func hasIdentityMaterials(customer system.Customer) bool {
+	return isVerificationMaterial(customer.IDCardFront) && isVerificationMaterial(customer.IDCardBack)
 }
 
 func List(c *gin.Context) {
@@ -277,6 +285,17 @@ func ReviewVerification(c *gin.Context) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "请填写驳回原因")
 		return
 	}
+	if input.Verified == system.StatusEnabled {
+		var customer system.Customer
+		if err := pgdb.GetClient().First(&customer, input.ID).Error; err != nil {
+			response.ReturnError(c, response.NOT_FOUND, "客户不存在")
+			return
+		}
+		if !hasIdentityMaterials(customer) {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面后再审核通过")
+			return
+		}
+	}
 	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", input.ID).Updates(map[string]any{"verified": input.Verified, "verification_remark": input.Remark}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "认证审核失败")
 		return
@@ -292,6 +311,21 @@ func BatchReviewVerification(c *gin.Context) {
 	if !middleware.CheckParam(&input, c) || len(input.IDs) == 0 {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择需要审核的客户")
 		return
+	}
+	var customers []system.Customer
+	if err := pgdb.GetClient().Where("id IN ?", input.IDs).Find(&customers).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取客户资料失败")
+		return
+	}
+	if len(customers) != len(input.IDs) {
+		response.ReturnError(c, response.NOT_FOUND, "部分客户不存在")
+		return
+	}
+	for _, customer := range customers {
+		if !hasIdentityMaterials(customer) {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "所选客户中存在未上传身份证正反面的资料，无法批量通过")
+			return
+		}
 	}
 	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id IN ?", input.IDs).Updates(map[string]any{"verified": uint(1), "verification_remark": input.Remark}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "批量审核失败")

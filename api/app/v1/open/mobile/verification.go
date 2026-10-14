@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -136,6 +139,16 @@ func UploadVerificationMaterial(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "保存照片失败")
 		return
 	}
+	originalPath := path
+	if kind == "video" {
+		transcodedPath, err := transcodeVerificationVideo(path)
+		if err != nil {
+			_ = os.Remove(path)
+			response.ReturnError(c, response.DATA_LOSS, "认证视频转换失败，请重新选择视频后再试")
+			return
+		}
+		path = transcodedPath
+	}
 	field := "id_card_front"
 	if kind == "back" {
 		field = "id_card_back"
@@ -146,6 +159,9 @@ func UploadVerificationMaterial(c *gin.Context) {
 	var customer system.Customer
 	if err := pgdb.GetClient().First(&customer, customerID).Error; err != nil {
 		_ = os.Remove(path)
+		if originalPath != path {
+			_ = os.Remove(originalPath)
+		}
 		response.ReturnError(c, response.NOT_FOUND, "用户不存在")
 		return
 	}
@@ -159,13 +175,46 @@ func UploadVerificationMaterial(c *gin.Context) {
 	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
 	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
 		_ = os.Remove(path)
+		if originalPath != path {
+			_ = os.Remove(originalPath)
+		}
 		response.ReturnError(c, response.DATA_LOSS, "保存材料记录失败")
 		return
+	}
+	if originalPath != path {
+		_ = os.Remove(originalPath)
 	}
 	if previous != "" && previous != path && strings.HasPrefix(previous, config.VerificationStorageDir) {
 		_ = os.Remove(previous)
 	}
 	response.ReturnData(c, gin.H{"uploaded": true, "kind": kind})
+}
+
+func transcodeVerificationVideo(inputPath string) (string, error) {
+	outputPath := strings.TrimSuffix(inputPath, filepath.Ext(inputPath)) + ".h264.mp4"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "ffmpeg",
+		"-y",
+		"-i", inputPath,
+		"-map", "0:v:0",
+		"-map", "0:a?",
+		"-c:v", "libx264",
+		"-pix_fmt", "yuv420p",
+		"-preset", "veryfast",
+		"-crf", "23",
+		"-c:a", "aac",
+		"-movflags", "+faststart",
+		outputPath,
+	)
+	if err := command.Run(); err != nil {
+		_ = os.Remove(outputPath)
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("认证视频转换超时: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("认证视频转换失败: %w", err)
+	}
+	return outputPath, nil
 }
 
 func SaveVerificationProfile(c *gin.Context) {

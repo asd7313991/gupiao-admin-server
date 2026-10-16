@@ -317,7 +317,7 @@ func fillTencentPrices(client *http.Client, securities []system.StockSecurity) e
 	indexBySymbol := make(map[string]int)
 	symbols := make([]string, 0)
 	for index := range securities {
-		if securities[index].LastPrice > 0 || securities[index].Exchange == "北交所" {
+		if securities[index].LastPrice > 0 {
 			continue
 		}
 		symbol := tencentSymbol(securities[index])
@@ -366,6 +366,9 @@ func tencentSymbol(security system.StockSecurity) string {
 	prefix := "sz"
 	if security.Exchange == "上交所" {
 		prefix = "sh"
+	}
+	if security.Exchange == "北交所" {
+		prefix = "bj"
 	}
 	return prefix + security.Code
 }

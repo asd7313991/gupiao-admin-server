@@ -91,6 +91,26 @@ func TestParseTencentQuotes(t *testing.T) {
 	}
 }
 
+func TestTencentSymbol(t *testing.T) {
+	tests := []struct {
+		name     string
+		security system.StockSecurity
+		want     string
+	}{
+		{name: "深交所", security: system.StockSecurity{Code: "000584", Exchange: "深交所"}, want: "sz000584"},
+		{name: "上交所", security: system.StockSecurity{Code: "600849", Exchange: "上交所"}, want: "sh600849"},
+		{name: "北交所", security: system.StockSecurity{Code: "832317", Exchange: "北交所"}, want: "bj832317"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := tencentSymbol(test.security); got != test.want {
+				t.Fatalf("tencentSymbol(%+v) = %q, want %q", test.security, got, test.want)
+			}
+		})
+	}
+}
+
 func TestUnavailableQuotesAreLabeled(t *testing.T) {
 	securities := []system.StockSecurity{
 		{Code: "300773", LastPrice: 14.38, Source: "eastmoney/tencent"},

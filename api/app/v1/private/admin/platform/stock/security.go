@@ -295,10 +295,12 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 			return synced, err
 		}
 		validPrices := 0
-		for _, security := range securities {
-			if security.LastPrice > 0 {
+		for index := range securities {
+			if securities[index].LastPrice > 0 {
 				validPrices++
+				continue
 			}
+			securities[index].Source = "eastmoney/unavailable"
 		}
 		if validPrices == 0 {
 			return synced, fmt.Errorf("第 %d 页行情没有有效价格，已取消写入", page)

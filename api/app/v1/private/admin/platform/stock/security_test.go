@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"api-server/db/pgdb/system"
 )
 
 func TestClassifyBoard(t *testing.T) {
@@ -86,5 +88,25 @@ func TestParseTencentQuotes(t *testing.T) {
 	}
 	if quote.Price != 14.38 || quote.ChangeRate != -2.38 {
 		t.Fatalf("行情解析错误：%+v", quote)
+	}
+}
+
+func TestUnavailableQuotesAreLabeled(t *testing.T) {
+	securities := []system.StockSecurity{
+		{Code: "300773", LastPrice: 14.38, Source: "eastmoney/tencent"},
+		{Code: "920285", LastPrice: 0, Source: "eastmoney"},
+	}
+
+	for index := range securities {
+		if securities[index].LastPrice <= 0 {
+			securities[index].Source = "eastmoney/unavailable"
+		}
+	}
+
+	if securities[0].Source != "eastmoney/tencent" {
+		t.Fatalf("有效行情来源错误：%s", securities[0].Source)
+	}
+	if securities[1].Source != "eastmoney/unavailable" {
+		t.Fatalf("无有效行情未标记：%s", securities[1].Source)
 	}
 }

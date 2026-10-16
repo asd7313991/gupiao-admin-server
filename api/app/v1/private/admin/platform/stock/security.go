@@ -373,6 +373,7 @@ func tencentSymbol(security system.StockSecurity) string {
 func parseTencentQuotes(body string) map[string]tencentQuote {
 	quotes := make(map[string]tencentQuote)
 	for _, line := range strings.Split(body, ";") {
+		line = strings.TrimSpace(line)
 		separator := strings.Index(line, "=")
 		if separator <= 2 {
 			continue

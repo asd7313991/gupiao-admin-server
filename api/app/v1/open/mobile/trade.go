@@ -191,10 +191,16 @@ func PlaceOrder(c *gin.Context) {
 		return
 	}
 	security, ok := findSecurity(input.Code)
-	if !ok || security.Status != system.StatusEnabled || security.LastPrice <= 0 {
+	if !ok || security.Status != system.StatusEnabled {
 		response.ReturnError(c, response.NOT_FOUND, "证券不可交易")
 		return
 	}
+	book, err := fetchOrderBook(security)
+	if err != nil || book.LastPrice <= 0 {
+		response.ReturnError(c, response.UNAVAILABLE, "行情数据暂时不可用，请稍后重试")
+		return
+	}
+	security.LastPrice = book.LastPrice
 	if message := validateSecurityTrade(security, input, settings); message != "" {
 		response.ReturnError(c, response.FAILED_PRECONDITION, message)
 		return

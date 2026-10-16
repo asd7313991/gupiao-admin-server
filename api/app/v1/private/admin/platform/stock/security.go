@@ -268,7 +268,11 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 			}
 		}
 		securities := make([]system.StockSecurity, 0, len(payload.Data.Diff))
+		validPrices := 0
 		for _, item := range payload.Data.Diff {
+			if item.Price > 0 {
+				validPrices++
+			}
 			market := "A股"
 			suffix := "SZ"
 			exchange := "深交所"
@@ -282,6 +286,9 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 				exchange = "北交所"
 			}
 			securities = append(securities, system.StockSecurity{Code: item.Code, Symbol: item.Code + "." + suffix, Market: market, Name: item.Name, Exchange: exchange, Board: board, ListDate: string(item.ListDate), LastPrice: float64(item.Price), ChangeRate: float64(item.ChangeRate), Volume: float64(item.Volume), Amount: float64(item.Amount), Turnover: float64(item.Turnover), Status: system.StatusEnabled, Source: "eastmoney"})
+		}
+		if validPrices == 0 {
+			return synced, fmt.Errorf("第 %d 页行情没有有效价格，已取消写入", page)
 		}
 		if err := pgdb.GetClient().Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date", "last_price", "change_rate", "volume", "amount", "turnover", "source", "updated_at"})}).Create(&securities).Error; err != nil {
 			return synced, err

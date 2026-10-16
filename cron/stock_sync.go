@@ -89,9 +89,11 @@ func runStockSyncIfDue() {
 }
 
 func isTradingTime(now time.Time, morningStart, morningEnd, afternoonStart, afternoonEnd string) bool {
-	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+	china := time.FixedZone("Asia/Shanghai", 8*60*60)
+	current := now.In(china)
+	if current.Weekday() == time.Saturday || current.Weekday() == time.Sunday {
 		return false
 	}
-	current := now.Format("15:04:05")
-	return (morningStart <= current && current <= morningEnd) || (afternoonStart <= current && current <= afternoonEnd)
+	clock := current.Format("15:04:05")
+	return (morningStart <= clock && clock <= morningEnd) || (afternoonStart <= clock && clock <= afternoonEnd)
 }

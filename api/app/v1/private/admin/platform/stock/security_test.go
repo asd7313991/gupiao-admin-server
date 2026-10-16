@@ -49,3 +49,26 @@ func TestEastmoneyDateUnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestFlexibleFloatUnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want float64
+	}{
+		{name: "数字价格", data: `6.78`, want: 6.78},
+		{name: "字符串价格", data: `"6.78"`, want: 6.78},
+		{name: "无报价", data: `"-"`, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got flexibleFloat
+			if err := json.Unmarshal([]byte(test.data), &got); err != nil {
+				t.Fatalf("解析行情价格失败：%v", err)
+			}
+			if float64(got) != test.want {
+				t.Fatalf("行情价格 = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

@@ -2,11 +2,17 @@ package trade
 
 import (
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -35,7 +41,121 @@ func ListPositions(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "查询持仓失败")
 		return
 	}
+	livePrices, err := fetchLivePositionPrices(items)
+	if err != nil {
+		response.ReturnError(c, response.UNAVAILABLE, "读取实时持仓行情失败，请稍后重试")
+		return
+	}
+	for index := range items {
+		if price, exists := livePrices[items[index].Symbol]; exists {
+			refreshPositionMarketValues(&items[index], price)
+		}
+	}
 	response.ReturnData(c, items)
+}
+
+func fetchLivePositionPrices(positions []system.TradePosition) (map[string]float64, error) {
+	symbolToPosition := make(map[string]string)
+	symbols := make([]string, 0, len(positions))
+	for _, position := range positions {
+		symbol := positionQuoteSymbol(position.Symbol)
+		if symbol == "" {
+			continue
+		}
+		if _, exists := symbolToPosition[symbol]; !exists {
+			symbolToPosition[symbol] = position.Symbol
+			symbols = append(symbols, symbol)
+		}
+	}
+	prices := make(map[string]float64)
+	client := &http.Client{Timeout: 8 * time.Second}
+	for start := 0; start < len(symbols); start += 100 {
+		end := start + 100
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		request, err := http.NewRequest(http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(strings.Join(symbols[start:end], ",")), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("User-Agent", "Mozilla/5.0")
+		request.Header.Set("Referer", "https://gu.qq.com/")
+		result, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if result.StatusCode != http.StatusOK {
+			result.Body.Close()
+			return nil, fmt.Errorf("实时行情响应状态异常：%d", result.StatusCode)
+		}
+		reader := transform.NewReader(result.Body, simplifiedchinese.GBK.NewDecoder())
+		body, readErr := io.ReadAll(reader)
+		result.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		for quoteSymbol, price := range parseLivePositionQuotes(string(body)) {
+			if positionSymbol, exists := symbolToPosition[quoteSymbol]; exists {
+				prices[positionSymbol] = price
+			}
+		}
+	}
+	return prices, nil
+}
+
+func positionQuoteSymbol(symbol string) string {
+	parts := strings.Split(strings.ToUpper(strings.TrimSpace(symbol)), ".")
+	if len(parts) != 2 || parts[0] == "" {
+		return ""
+	}
+	switch parts[1] {
+	case "SH":
+		return "sh" + parts[0]
+	case "SZ":
+		return "sz" + parts[0]
+	case "BJ":
+		return "bj" + parts[0]
+	default:
+		return ""
+	}
+}
+
+func parseLivePositionQuotes(body string) map[string]float64 {
+	prices := make(map[string]float64)
+	for _, line := range strings.Split(body, ";") {
+		separator := strings.Index(line, "=")
+		if separator <= 2 {
+			continue
+		}
+		quoteSymbol := strings.TrimPrefix(line[:separator], "v_")
+		fields := strings.Split(strings.Trim(line[separator+1:], `"`), "~")
+		if len(fields) < 4 {
+			continue
+		}
+		price, err := strconv.ParseFloat(fields[3], 64)
+		if err == nil && price > 0 {
+			prices[quoteSymbol] = price
+		}
+	}
+	return prices
+}
+
+func refreshPositionMarketValues(position *system.TradePosition, price float64) {
+	leverage := position.Leverage
+	if leverage < 1 {
+		leverage = 1
+	}
+	totalCost := position.TotalCost
+	if totalCost <= 0 {
+		totalCost = position.PositionQty * position.CostPrice
+	}
+	position.CurrentPrice = price
+	position.MarketValue = roundPositionMoney(position.PositionQty * price * leverage)
+	position.ProfitLoss = roundPositionMoney((position.PositionQty*price - totalCost) * leverage)
+	position.ProfitRate = 0
+	if totalCost > 0 {
+		position.ProfitRate = roundPositionMoney(position.ProfitLoss / totalCost * 100)
+	}
 }
 
 func SavePosition(c *gin.Context) {

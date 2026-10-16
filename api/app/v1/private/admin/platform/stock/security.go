@@ -3,6 +3,7 @@ package stock
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 	"gorm.io/gorm/clause"
 
 	"api-server/api/middleware"
@@ -38,6 +41,11 @@ type eastmoneyResponse struct {
 type flexibleFloat float64
 
 type eastmoneyDate string
+
+type tencentQuote struct {
+	Price      float64
+	ChangeRate float64
+}
 
 func (value *eastmoneyDate) UnmarshalJSON(data []byte) error {
 	text := strings.Trim(strings.TrimSpace(string(data)), `"`)
@@ -268,11 +276,7 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 			}
 		}
 		securities := make([]system.StockSecurity, 0, len(payload.Data.Diff))
-		validPrices := 0
 		for _, item := range payload.Data.Diff {
-			if item.Price > 0 {
-				validPrices++
-			}
 			market := "A股"
 			suffix := "SZ"
 			exchange := "深交所"
@@ -287,6 +291,15 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 			}
 			securities = append(securities, system.StockSecurity{Code: item.Code, Symbol: item.Code + "." + suffix, Market: market, Name: item.Name, Exchange: exchange, Board: board, ListDate: string(item.ListDate), LastPrice: float64(item.Price), ChangeRate: float64(item.ChangeRate), Volume: float64(item.Volume), Amount: float64(item.Amount), Turnover: float64(item.Turnover), Status: system.StatusEnabled, Source: "eastmoney"})
 		}
+		if err := fillTencentPrices(client, securities); err != nil {
+			return synced, err
+		}
+		validPrices := 0
+		for _, security := range securities {
+			if security.LastPrice > 0 {
+				validPrices++
+			}
+		}
 		if validPrices == 0 {
 			return synced, fmt.Errorf("第 %d 页行情没有有效价格，已取消写入", page)
 		}
@@ -296,6 +309,85 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 		synced += len(securities)
 	}
 	return synced, nil
+}
+
+func fillTencentPrices(client *http.Client, securities []system.StockSecurity) error {
+	indexBySymbol := make(map[string]int)
+	symbols := make([]string, 0)
+	for index := range securities {
+		if securities[index].LastPrice > 0 || securities[index].Exchange == "北交所" {
+			continue
+		}
+		symbol := tencentSymbol(securities[index])
+		indexBySymbol[symbol] = index
+		symbols = append(symbols, symbol)
+	}
+	for start := 0; start < len(symbols); start += 100 {
+		end := start + 100
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		request, err := http.NewRequest(http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(strings.Join(symbols[start:end], ",")), nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("User-Agent", "Mozilla/5.0")
+		request.Header.Set("Referer", "https://gu.qq.com/")
+		response, err := client.Do(request)
+		if err != nil {
+			return err
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			return fmt.Errorf("腾讯行情响应状态异常：%d", response.StatusCode)
+		}
+		reader := transform.NewReader(response.Body, simplifiedchinese.GBK.NewDecoder())
+		body, readErr := io.ReadAll(reader)
+		response.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		for symbol, quote := range parseTencentQuotes(string(body)) {
+			index, exists := indexBySymbol[symbol]
+			if !exists || quote.Price <= 0 {
+				continue
+			}
+			securities[index].LastPrice = quote.Price
+			securities[index].ChangeRate = quote.ChangeRate
+			securities[index].Source = "eastmoney/tencent"
+		}
+	}
+	return nil
+}
+
+func tencentSymbol(security system.StockSecurity) string {
+	prefix := "sz"
+	if security.Exchange == "上交所" {
+		prefix = "sh"
+	}
+	return prefix + security.Code
+}
+
+func parseTencentQuotes(body string) map[string]tencentQuote {
+	quotes := make(map[string]tencentQuote)
+	for _, line := range strings.Split(body, ";") {
+		separator := strings.Index(line, "=")
+		if separator <= 2 {
+			continue
+		}
+		symbol := strings.TrimPrefix(line[:separator], "v_")
+		fields := strings.Split(strings.Trim(line[separator+1:], `"`), "~")
+		if len(fields) < 33 {
+			continue
+		}
+		price, err := strconv.ParseFloat(fields[3], 64)
+		if err != nil || price <= 0 {
+			continue
+		}
+		changeRate, _ := strconv.ParseFloat(fields[32], 64)
+		quotes[symbol] = tencentQuote{Price: price, ChangeRate: changeRate}
+	}
+	return quotes
 }
 
 func classifyBoard(code string, market int) string {

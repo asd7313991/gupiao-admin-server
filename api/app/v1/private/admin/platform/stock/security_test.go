@@ -2,6 +2,7 @@ package stock
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +71,20 @@ func TestFlexibleFloatUnmarshalJSON(t *testing.T) {
 				t.Fatalf("行情价格 = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestParseTencentQuotes(t *testing.T) {
+	fields := make([]string, 33)
+	fields[0], fields[1], fields[2] = "51", "拉卡拉", "300773"
+	fields[3], fields[4], fields[32] = "14.38", "14.38", "-2.38"
+	body := `v_sz300773="` + strings.Join(fields, "~") + `";`
+	quotes := parseTencentQuotes(body)
+	quote, exists := quotes["sz300773"]
+	if !exists {
+		t.Fatal("未解析到拉卡拉行情")
+	}
+	if quote.Price != 14.38 || quote.ChangeRate != -2.38 {
+		t.Fatalf("行情解析错误：%+v", quote)
 	}
 }

@@ -412,8 +412,8 @@ func validateSecurityTradeAt(security system.StockSecurity, input orderInput, se
 	if security.Board == "北交所" {
 		limit = settings.Limits.BeijingBoard
 	}
-	if limit > 0 && security.ChangeRate/100 > limit {
-		return "当前涨幅超过系统买入限制"
+	if limit > 0 && security.ChangeRate/100 >= limit {
+		return "当前涨幅已达到系统买入限制"
 	}
 	return ""
 }

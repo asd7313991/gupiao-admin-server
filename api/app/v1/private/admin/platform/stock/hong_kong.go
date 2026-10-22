@@ -260,7 +260,7 @@ func hongKongNumber(text, field string) (float64, error) {
 }
 
 func sinaHongKongToSecurity(item sinaHongKongSecurity) (system.StockSecurity, error) {
-	security := system.StockSecurity{Code: item.Code, Symbol: item.Code + ".HK", Name: item.Name, Market: "港股", Exchange: "港交所", Status: system.StatusDisabled, Source: "sina/unavailable"}
+	security := system.StockSecurity{Code: item.Code, Symbol: item.Code + ".HK", Name: item.Name, Market: "港股", Exchange: "港交所", Status: system.StatusEnabled, Source: "sina/unavailable"}
 	fields := []struct {
 		name string
 		text string

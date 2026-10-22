@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"api-server/api/middleware"
@@ -173,6 +175,22 @@ func ListExchanges(c *gin.Context) {
 	response.ReturnData(c, exchanges)
 }
 
+func EnableHongKongSecurities(c *gin.Context) {
+	updated, err := enableHongKongSecurities(pgdb.GetClient())
+	if err != nil {
+		zap.L().Error("批量启用港股失败", zap.Error(err))
+		response.ReturnError(c, response.DATA_LOSS, "批量启用港股失败，请刷新后重试")
+		return
+	}
+	response.ReturnData(c, gin.H{"updated": updated})
+}
+
+func enableHongKongSecurities(db *gorm.DB) (int64, error) {
+	result := db.Model(&system.StockSecurity{}).
+		Where("symbol LIKE ? AND status IS DISTINCT FROM ?", "%.HK", system.StatusEnabled).
+		Update("status", system.StatusEnabled)
+	return result.RowsAffected, result.Error
+}
 func ListBoards(c *gin.Context) {
 	var boards []string
 	if err := pgdb.GetClient().Model(&system.StockSecurity{}).Where("deleted_at IS NULL AND board <> ''").Distinct("board").Order("board ASC").Pluck("board", &boards).Error; err != nil {

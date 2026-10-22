@@ -27,7 +27,7 @@ func TestSinaHongKongToSecurity(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantTime := time.Date(2026, 10, 20, 6, 0, 0, 0, time.UTC).Unix()
-	if security.Symbol != "00700.HK" || security.Code != "00700" || security.Market != "港股" || security.Exchange != "港交所" || security.Status != system.StatusDisabled {
+	if security.Symbol != "00700.HK" || security.Code != "00700" || security.Market != "港股" || security.Exchange != "港交所" || security.Status != system.StatusEnabled {
 		t.Fatalf("港股身份或默认状态错误：%+v", security)
 	}
 	if security.LastPrice != 410.123 || security.ChangeRate != -1.77 || security.Volume != 1234 || security.Amount != 506400.5 || security.QuoteAt != wantTime || security.Source != "sina" {

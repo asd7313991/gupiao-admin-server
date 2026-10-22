@@ -14,6 +14,73 @@ import (
 	"api-server/db/pgdb/system"
 )
 
+func TestEnableHongKongSecurities(t *testing.T) {
+	dsn := os.Getenv("HK_SYNC_TEST_DSN")
+	if dsn == "" {
+		t.Skip("未设置 HK_SYNC_TEST_DSN")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	rollback := errors.New("回滚批量启用测试数据")
+	err = db.Transaction(func(tx *gorm.DB) error {
+		schema := fmt.Sprintf("hk_enable_test_%d", time.Now().UnixNano())
+		if err := tx.Exec("CREATE SCHEMA " + schema).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("SET LOCAL search_path TO " + schema).Error; err != nil {
+			return err
+		}
+		if err := tx.AutoMigrate(&system.StockSecurity{}); err != nil {
+			return err
+		}
+		rows := []system.StockSecurity{
+			{Code: "00700", Symbol: "00700.HK", Status: system.StatusDisabled, LastPrice: 410.123, QuoteAt: 1792476000, Board: "保留分类"},
+			{Code: "09988", Symbol: "09988.HK", Status: system.StatusEnabled},
+			{Code: "600519", Symbol: "600519.SH", Status: system.StatusDisabled},
+			{Code: "000001", Symbol: "000001.SZ", Status: system.StatusEnabled},
+			{Code: "02348", Symbol: "02348.HK", Status: system.StatusDisabled},
+		}
+		if err := tx.Create(&rows).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&rows[4]).Error; err != nil {
+			return err
+		}
+		for run, expected := range []int64{1, 0} {
+			updated, err := enableHongKongSecurities(tx)
+			if err != nil {
+				return err
+			}
+			if updated != expected {
+				t.Errorf("第%d次启用条数=%d，预期%d", run, updated, expected)
+			}
+		}
+		for index, expected := range []uint{system.StatusEnabled, system.StatusEnabled, system.StatusDisabled, system.StatusEnabled, system.StatusDisabled} {
+			var saved system.StockSecurity
+			if err := tx.Unscoped().First(&saved, rows[index].ID).Error; err != nil {
+				return err
+			}
+			if saved.Status != expected || saved.LastPrice != rows[index].LastPrice || saved.QuoteAt != rows[index].QuoteAt || saved.Board != rows[index].Board {
+				t.Errorf("批量启用修改了范围外字段或证券：%+v", saved)
+			}
+			if index == 4 && !saved.DeletedAt.Valid {
+				t.Error("已删除证券被恢复")
+			}
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+}
+
 func TestSaveHongKongSecurities(t *testing.T) {
 	dsn := os.Getenv("HK_SYNC_TEST_DSN")
 	if dsn == "" {
@@ -46,8 +113,8 @@ func TestSaveHongKongSecurities(t *testing.T) {
 			return err
 		}
 		rows := []system.StockSecurity{
-			{Code: "00700", Symbol: "00700.HK", Market: "港股", Exchange: "港交所", Name: "腾讯控股", LastPrice: 410.123, QuoteAt: 1792476000, Source: "sina/tencent", Status: system.StatusDisabled},
-			{Code: "09988", Symbol: "09988.HK", Market: "港股", Exchange: "港交所", Name: "阿里巴巴", LastPrice: 104.7, QuoteAt: 1792476001, Source: "sina", Status: system.StatusDisabled},
+			{Code: "00700", Symbol: "00700.HK", Market: "港股", Exchange: "港交所", Name: "腾讯控股", LastPrice: 410.123, QuoteAt: 1792476000, Source: "sina/tencent", Status: system.StatusEnabled},
+			{Code: "09988", Symbol: "09988.HK", Market: "港股", Exchange: "港交所", Name: "阿里巴巴", LastPrice: 104.7, QuoteAt: 1792476001, Source: "sina", Status: system.StatusEnabled},
 		}
 		for run := 0; run < 2; run++ {
 			if err := saveHongKongSecurities(context.Background(), tx, rows); err != nil {
@@ -60,6 +127,13 @@ func TestSaveHongKongSecurities(t *testing.T) {
 		}
 		if saved.LastPrice != 410.123 || saved.Source != "sina/tencent" || saved.QuoteAt != 1792476000 || saved.Board != "人工分类" || saved.Status != system.StatusDisabled {
 			t.Errorf("重复同步未保留报价或人工状态：%+v", saved)
+		}
+		var added system.StockSecurity
+		if err := tx.Where("code = ?", "09988").First(&added).Error; err != nil {
+			return err
+		}
+		if added.Status != system.StatusEnabled {
+			t.Errorf("新增港股未自动启用：%+v", added)
 		}
 		var total int64
 		if err := tx.Model(&system.StockSecurity{}).Count(&total).Error; err != nil {

@@ -286,4 +286,43 @@ func TestHongKongLimitOrderIntegration(t *testing.T) {
 	default:
 		t.Fatal("撤单与撮合竞争后状态错误", raceOrder)
 	}
+	night := now.Add(12 * time.Hour)
+	buy2.RequestID = "hk-limit-all-day-night"
+	nightOrder, err := placeHongKongLimitOrderDB(db, customer.ID, security, q, buy2, night)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nightDepth := depth
+	nightDepth.QuoteAt = night.Add(-15 * time.Minute).Unix()
+	if err := db.Model(&setting).Update("config", gorm.Expr("jsonb_set(config::jsonb, '{trade,allDay}', 'false'::jsonb)")).Error; err != nil {
+		t.Fatal(err)
+	}
+	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, nightOrder.ID, nightDepth, night); err != nil || filled {
+		t.Fatal("关闭全天开关后夜间应等待", filled, err)
+	}
+	if err := db.Model(&setting).Update("config", gorm.Expr("jsonb_set(config::jsonb, '{trade,allDay}', 'true'::jsonb)")).Error; err != nil {
+		t.Fatal(err)
+	}
+	nightOld := nightDepth
+	nightOld.QuoteAt = night.Add(-31 * time.Minute).Unix()
+	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, nightOrder.ID, nightOld, night); err != nil || filled {
+		t.Fatal("开启全天开关仍拒绝过期盘口", filled, err)
+	}
+	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, nightOrder.ID, nightDepth, night); err != nil || !filled {
+		t.Fatal("开启全天开关应以有效夜间盘口模拟成交", filled, err)
+	}
+	if err := db.Model(&setting).Update("config", gorm.Expr("jsonb_set(config::jsonb, '{trade,allDay}', 'false'::jsonb)")).Error; err != nil {
+		t.Fatal(err)
+	}
+	buy2.RequestID = "hk-limit-all-day-switched-off"
+	blockedOrder, err := placeHongKongLimitOrderDB(db, customer.ID, security, q, buy2, night)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, blockedOrder.ID, nightDepth, night); err != nil || filled {
+		t.Fatal("重新关闭全天开关须恢复时段限制", filled, err)
+	}
+	if err := cancelHongKongLimitOrderDB(db, customer.ID, blockedOrder.ID, night); err != nil {
+		t.Fatal(err)
+	}
 }

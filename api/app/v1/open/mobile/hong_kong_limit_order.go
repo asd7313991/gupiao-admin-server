@@ -34,10 +34,6 @@ func parseHongKongDepthLevel(rawPrice, rawVolume string) orderBookLevel {
 	return orderBookLevel{Price: price, Volume: volume}
 }
 
-func hongKongLimitTradingTime(now time.Time) bool {
-	return isMobileTradingTime(now, "09:30:00", "12:00:00", "13:00:00", "16:00:00")
-}
-
 func validateHongKongLimitMetadata(quote hongKongQuote, security system.StockSecurity, settings mobileTradeSettings, now time.Time) string {
 	if message := validateHongKongSettings(settings); message != "" {
 		return message
@@ -260,8 +256,8 @@ func cancelHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, now time.Time)
 	})
 }
 
-func hongKongLimitMatchPrice(order system.LimitOrder, quote hongKongQuote, now time.Time) (float64, bool) {
-	if !hongKongLimitTradingTime(now) || validateHongKongQuote(quote, now) != "" || order.Symbol != quote.Code+".HK" {
+func hongKongLimitMatchPrice(order system.LimitOrder, quote hongKongQuote, now time.Time, settings mobileTradeSettings) (float64, bool) {
+	if !hongKongTradeTime(now, settings) || validateHongKongQuote(quote, now) != "" || order.Symbol != quote.Code+".HK" {
 		return 0, false
 	}
 	bestBid, bestAsk := 0.0, 0.0
@@ -307,20 +303,20 @@ func matchHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, quote hongKongQ
 		if order.Status != limitOrderPending {
 			return nil
 		}
-		price, match := hongKongLimitMatchPrice(order, quote, now)
-		if !match {
-			return nil
-		}
-		var security system.StockSecurity
-		if err := tx.Where("symbol = ?", order.Symbol).First(&security).Error; err != nil {
-			return err
-		}
 		var setting system.AppSystemSetting
 		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&setting).Error; err != nil {
 			return err
 		}
 		settings, err := parseMobileTradeSettings(setting.Config)
 		if err != nil {
+			return err
+		}
+		price, match := hongKongLimitMatchPrice(order, quote, now, settings)
+		if !match {
+			return nil
+		}
+		var security system.StockSecurity
+		if err := tx.Where("symbol = ?", order.Symbol).First(&security).Error; err != nil {
 			return err
 		}
 		security.LastPrice = price

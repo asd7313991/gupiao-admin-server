@@ -267,7 +267,7 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 	}
 	if strings.HasSuffix(snapshot.Symbol, ".HK") {
 		now := time.Now()
-		if !hongKongLimitTradingTime(now) || !settings.HKTrade.Enabled {
+		if !hongKongTradeTime(now, settings) || !settings.HKTrade.Enabled {
 			return false, nil
 		}
 		quote, err := fetchHongKongTradeQuote(context.Background(), strings.TrimSuffix(snapshot.Symbol, ".HK"))
@@ -407,7 +407,7 @@ func toLimitOrderView(order system.LimitOrder) limitOrderView {
 	if strings.HasSuffix(order.Symbol, ".HK") {
 		currency = "HKD"
 		if order.Status == limitOrderPending {
-			note = "仅在港股交易时段内按有效买卖盘口模拟成交；无盘口、零挂量、过期行情或未达限价时继续等待，可撤单解冻"
+			note = "按有效买卖盘口模拟成交，交易时段限制由后台全天交易开关控制；无盘口、零挂量、过期行情或未达限价时继续等待，可撤单解冻"
 		}
 	}
 	return limitOrderView{ID: order.ID, Code: code, Symbol: order.Symbol, StockName: order.StockName, Direction: order.Direction, LimitPrice: order.LimitPrice, Quantity: order.Quantity, Status: order.Status, StatusLabel: labels[order.Status], FrozenAmount: order.FrozenAmount, ExecutedPrice: order.ExecutedPrice, CreatedAt: order.CreatedAt.Unix(), FilledAt: order.FilledAt, CancelledAt: order.CancelledAt, Currency: currency, QuoteAt: order.QuoteAt, MatchingNote: note}

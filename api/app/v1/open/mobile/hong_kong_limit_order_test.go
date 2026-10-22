@@ -19,6 +19,7 @@ func TestHongKongLimitMatchPrice(t *testing.T) {
 		age       time.Duration
 		time      time.Time
 		want      float64
+		allDay    bool
 	}{
 		{name: "最新价达标但无盘口仍等待", direction: "买入", price: 1},
 		{name: "零挂量不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95}}},
@@ -35,6 +36,13 @@ func TestHongKongLimitMatchPrice(t *testing.T) {
 		{name: "非数值盘口不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: math.NaN(), Volume: 100}}},
 		{name: "无限挂量不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95, Volume: math.Inf(1)}}},
 		{name: "仅有买盘不能买入", direction: "买入", price: 1, bid: []orderBookLevel{{Price: 0.95, Volume: 100}}},
+		{name: "全天模式午休有效盘口成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95, Volume: 100}}, time: now.Add(90 * time.Minute), allDay: true, want: 0.95},
+		{name: "全天模式夜间有效买盘成交", direction: "卖出", price: 0.9, bid: []orderBookLevel{{Price: 0.95, Volume: 100}}, time: now.Add(12 * time.Hour), allDay: true, want: 0.95},
+		{name: "全天模式周末有效盘口成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95, Volume: 100}}, time: now.AddDate(0, 0, 2), allDay: true, want: 0.95},
+		{name: "全天模式旧盘口不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95, Volume: 100}}, age: 31 * time.Minute, allDay: true},
+		{name: "全天模式未来盘口不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95, Volume: 100}}, age: -2 * time.Minute, allDay: true},
+		{name: "全天模式零挂量不成交", direction: "买入", price: 1, ask: []orderBookLevel{{Price: 0.95}}, allDay: true},
+		{name: "全天模式无盘口不成交", direction: "买入", price: 1, allDay: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q, at := base, now
@@ -47,7 +55,9 @@ func TestHongKongLimitMatchPrice(t *testing.T) {
 			}
 			q.Bid, q.Ask = tc.bid, tc.ask
 			order := system.LimitOrder{Symbol: "02348.HK", Direction: tc.direction, LimitPrice: tc.price}
-			price, match := hongKongLimitMatchPrice(order, q, at)
+			var settings mobileTradeSettings
+			settings.Trade.AllDay = tc.allDay
+			price, match := hongKongLimitMatchPrice(order, q, at, settings)
 			if price != tc.want || match != (tc.want > 0) {
 				t.Fatalf("price=%v match=%v want=%v", price, match, tc.want)
 			}

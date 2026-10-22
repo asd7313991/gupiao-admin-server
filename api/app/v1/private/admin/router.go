@@ -149,6 +149,8 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	stockGroup.DELETE("/securities", platformStock.Delete)
 	stockGroup.PUT("/securities/status", platformStock.UpdateStatus)
 	stockGroup.POST("/securities/sync/eastmoney", platformStock.SyncEastmoney)
+	stockGroup.POST("/securities/sync/hong-kong", platformStock.SyncHongKong)
+	stockGroup.GET("/securities/sync/hong-kong", platformStock.HongKongSyncStatus)
 
 	financeGroup := group.Group("/finance", middleware.PlatformMenuAccess)
 	financeGroup.GET("/recharges", platformFinance.ListRecharges)

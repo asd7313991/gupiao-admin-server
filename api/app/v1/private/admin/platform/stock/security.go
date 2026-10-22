@@ -89,11 +89,12 @@ type securityResponse struct {
 	ChangeRate float64 `json:"change_rate"`
 	Status     uint    `json:"status"`
 	Source     string  `json:"source"`
+	QuoteAt    int64   `json:"quote_at"`
 	UpdatedAt  int64   `json:"updated_at"`
 }
 
 func toResponse(item system.StockSecurity) securityResponse {
-	return securityResponse{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, ListDate: item.ListDate, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Status: item.Status, Source: item.Source, UpdatedAt: item.UpdatedAt.Unix()}
+	return securityResponse{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, ListDate: item.ListDate, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Status: item.Status, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
 }
 
 func List(c *gin.Context) {

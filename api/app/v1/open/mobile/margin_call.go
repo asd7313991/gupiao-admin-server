@@ -29,7 +29,7 @@ func ProcessMarginCalls(now time.Time) (supplements int, forced int, err error) 
 	}
 	var customerIDs []uint
 	if err := pgdb.GetClient().Model(&system.TradePosition{}).
-		Where("position_qty > 0 AND deleted_at IS NULL").
+		Where("position_qty > 0 AND deleted_at IS NULL AND symbol NOT LIKE ?", "%.HK").
 		Distinct("customer_id").Pluck("customer_id", &customerIDs).Error; err != nil {
 		return 0, 0, err
 	}
@@ -47,14 +47,18 @@ func ProcessMarginCalls(now time.Time) (supplements int, forced int, err error) 
 }
 
 func processCustomerMarginCalls(customerID uint, startLoss, supplementRate float64, now time.Time) (int, bool, error) {
+	return processCustomerMarginCallsDB(pgdb.GetClient(), customerID, startLoss, supplementRate, now)
+}
+
+func processCustomerMarginCallsDB(db *gorm.DB, customerID uint, startLoss, supplementRate float64, now time.Time) (int, bool, error) {
 	supplements, forced := 0, false
-	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var customer system.Customer
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, customerID).Error; err != nil {
 			return err
 		}
 		var positions []system.TradePosition
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND position_qty > 0 AND deleted_at IS NULL", customerID).Find(&positions).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND position_qty > 0 AND deleted_at IS NULL AND symbol NOT LIKE ?", customerID, "%.HK").Find(&positions).Error; err != nil {
 			return err
 		}
 		requirements := make([]marginCallRequirement, 0)

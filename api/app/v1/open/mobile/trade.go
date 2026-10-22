@@ -33,12 +33,14 @@ type mobileTradeSettings struct {
 		AllDay         bool    `json:"allDay"`
 	} `json:"trade"`
 	HKTrade struct {
-		Commission    float64 `json:"commission"`
-		MinCommission float64 `json:"minCommission"`
-		StampDuty     float64 `json:"stampDuty"`
-		RegulatoryFee float64 `json:"regulatoryFee"`
-		TradingFee    float64 `json:"tradingFee"`
-		SettlementFee float64 `json:"settlementFee"`
+		Enabled        bool    `json:"enabled"`
+		LocalCloseTest bool    `json:"localCloseTest"`
+		Commission     float64 `json:"commission"`
+		MinCommission  float64 `json:"minCommission"`
+		StampDuty      float64 `json:"stampDuty"`
+		RegulatoryFee  float64 `json:"regulatoryFee"`
+		TradingFee     float64 `json:"tradingFee"`
+		SettlementFee  float64 `json:"settlementFee"`
 	} `json:"hkTrade"`
 	Limits struct {
 		StarBoard     float64 `json:"starBoard"`
@@ -62,7 +64,8 @@ type mobileTradeSettings struct {
 		MinWithdraw  float64 `json:"minWithdraw"`
 	} `json:"recharge"`
 	Links struct {
-		CustomerService string `json:"customerService"`
+		CustomerService string  `json:"customerService"`
+		HKDRate         float64 `json:"hkdRate"`
 	} `json:"links"`
 }
 
@@ -73,22 +76,26 @@ type orderInput struct {
 }
 
 type orderResult struct {
-	RecordID      uint    `json:"record_id"`
-	PositionID    uint    `json:"position_id"`
-	Direction     string  `json:"direction"`
-	Price         float64 `json:"price"`
-	Quantity      float64 `json:"quantity"`
-	Amount        float64 `json:"amount"`
-	Commission    float64 `json:"commission"`
-	StampDuty     float64 `json:"stamp_duty"`
-	TransferFee   float64 `json:"transfer_fee"`
-	ManagementFee float64 `json:"management_fee"`
-	TotalFee      float64 `json:"total_fee"`
-	BalanceAfter  float64 `json:"balance_after"`
-	ExecutedAt    int64   `json:"executed_at"`
+	LocalCloseTest bool    `json:"local_close_test"`
+	Currency       string  `json:"currency"`
+	QuoteAt        int64   `json:"quote_at"`
+	RecordID       uint    `json:"record_id"`
+	PositionID     uint    `json:"position_id"`
+	Direction      string  `json:"direction"`
+	Price          float64 `json:"price"`
+	Quantity       float64 `json:"quantity"`
+	Amount         float64 `json:"amount"`
+	Commission     float64 `json:"commission"`
+	StampDuty      float64 `json:"stamp_duty"`
+	TransferFee    float64 `json:"transfer_fee"`
+	ManagementFee  float64 `json:"management_fee"`
+	TotalFee       float64 `json:"total_fee"`
+	BalanceAfter   float64 `json:"balance_after"`
+	ExecutedAt     int64   `json:"executed_at"`
 }
 
 type tradePositionView struct {
+	Currency     string  `json:"currency"`
 	ID           uint    `json:"id"`
 	Symbol       string  `json:"symbol"`
 	StockName    string  `json:"stock_name"`
@@ -117,13 +124,15 @@ func MobileTradeSettings(c *gin.Context) {
 		"leverage_enabled":    leverage > 1,
 		"default_leverage":    leverage,
 		"management_fee_rate": effectiveManagementFeeRate(settings),
+		"hk_enabled":          settings.HKTrade.Enabled,
 	})
 }
 
 func ListCustomerPositions(c *gin.Context) {
 	customerID := middleware.GetCurrentCustomerID(c)
 	var items []system.TradePosition
-	if err := pgdb.GetClient().Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC").Find(&items).Error; err != nil {
+	db := tradeMarketScope(pgdb.GetClient(), c.Query("market"))
+	if err := db.Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC").Find(&items).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取持仓失败")
 		return
 	}
@@ -140,7 +149,7 @@ func ListCustomerPositions(c *gin.Context) {
 		if margin <= 0 && item.TotalCost > 0 {
 			margin = roundMoney(item.TotalCost)
 		}
-		views = append(views, tradePositionView{ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
+		views = append(views, tradePositionView{Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
 	}
 	response.ReturnData(c, views)
 }
@@ -154,6 +163,7 @@ func ListCustomerTradeRecords(c *gin.Context) {
 		pageSize = 20
 	}
 	db := pgdb.GetClient().Model(&system.TradeRecord{}).Where("customer_id = ?", middleware.GetCurrentCustomerID(c))
+	db = tradeMarketScope(db, c.Query("market"))
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取交易记录失败")
@@ -193,6 +203,10 @@ func PlaceOrder(c *gin.Context) {
 	security, ok := findSecurity(input.Code)
 	if !ok || security.Status != system.StatusEnabled {
 		response.ReturnError(c, response.NOT_FOUND, "证券不可交易")
+		return
+	}
+	if isHongKongSecurity(security) {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "港股请使用独立港币模拟交易入口")
 		return
 	}
 	book, err := fetchOrderBook(security)
@@ -314,11 +328,19 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			return err
 		}
 	}
-	*result = orderResult{RecordID: record.ID, PositionID: position.ID, Direction: input.Direction, Price: security.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, ManagementFee: managementFee, TotalFee: totalFee, BalanceAfter: customer.Balance, ExecutedAt: record.TradeAt}
+	*result = orderResult{Currency: "CNY", RecordID: record.ID, PositionID: position.ID, Direction: input.Direction, Price: security.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, ManagementFee: managementFee, TotalFee: totalFee, BalanceAfter: customer.Balance, ExecutedAt: record.TradeAt}
 	return nil
 }
 
 func loadMobileTradeSettings() (mobileTradeSettings, error) {
+	var row system.AppSystemSetting
+	if err := pgdb.GetClient().First(&row).Error; err != nil {
+		return mobileTradeSettings{}, err
+	}
+	return parseMobileTradeSettings(row.Config)
+}
+
+func parseMobileTradeSettings(config string) (mobileTradeSettings, error) {
 	var result mobileTradeSettings
 	result.Trade.BuyCommission, result.Trade.SellCommission = 0.0003, 0.0003
 	result.Trade.MinCommission, result.Trade.StampDuty, result.Trade.TransferFee = 5, 0.0005, 0.0001
@@ -335,11 +357,7 @@ func loadMobileTradeSettings() (mobileTradeSettings, error) {
 	result.Risk.DefaultLeverage = 5
 	result.Risk.MarginCallStart = 16
 	result.Risk.MarginCallRate = 0.01
-	var row system.AppSystemSetting
-	if err := pgdb.GetClient().First(&row).Error; err != nil {
-		return result, err
-	}
-	return result, json.Unmarshal([]byte(row.Config), &result)
+	return result, json.Unmarshal([]byte(config), &result)
 }
 
 func effectiveLeverage(settings mobileTradeSettings) float64 {
@@ -434,9 +452,7 @@ func calculateTradeFees(security system.StockSecurity, quantity float64, directi
 	amount = roundMoney(security.LastPrice * quantity)
 	if isHongKongSecurity(security) {
 		commission = commissionAmount(amount, settings.HKTrade.Commission, settings.HKTrade.MinCommission)
-		if direction == "卖出" {
-			stampDuty = roundMoney(amount * settings.HKTrade.StampDuty)
-		}
+		stampDuty = roundMoney(amount * settings.HKTrade.StampDuty)
 		transferFee = roundMoney(amount * (settings.HKTrade.RegulatoryFee + settings.HKTrade.TradingFee + settings.HKTrade.SettlementFee))
 	} else {
 		commissionRate := settings.Trade.BuyCommission

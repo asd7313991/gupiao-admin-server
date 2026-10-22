@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -46,6 +48,9 @@ type limitOrderView struct {
 	CreatedAt     int64   `json:"created_at"`
 	FilledAt      int64   `json:"filled_at"`
 	CancelledAt   int64   `json:"cancelled_at"`
+	Currency      string  `json:"currency"`
+	QuoteAt       int64   `json:"quote_at"`
+	MatchingNote  string  `json:"matching_note,omitempty"`
 }
 
 func PlaceLimitOrder(c *gin.Context) {
@@ -71,6 +76,10 @@ func PlaceLimitOrder(c *gin.Context) {
 	security, ok := findSecurity(input.Code)
 	if !ok || security.Status != system.StatusEnabled {
 		response.ReturnError(c, response.NOT_FOUND, "证券不可交易")
+		return
+	}
+	if isHongKongSecurity(security) {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "港股限价委托请使用独立港股接口")
 		return
 	}
 	book, err := fetchOrderBook(security)
@@ -161,6 +170,7 @@ func ListLimitOrders(c *gin.Context) {
 		pageSize = 30
 	}
 	db := pgdb.GetClient().Where("customer_id = ? AND deleted_at IS NULL", middleware.GetCurrentCustomerID(c))
+	db = tradeMarketScope(db, c.Query("market"))
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		db = db.Where("status = ?", status)
 	}
@@ -185,6 +195,20 @@ func CancelLimitOrder(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "委托 ID 无效")
+		return
+	}
+	var snapshot system.LimitOrder
+	if err := pgdb.GetClient().Where("id = ? AND customer_id = ?", id, middleware.GetCurrentCustomerID(c)).First(&snapshot).Error; err != nil {
+		response.ReturnError(c, response.NOT_FOUND, "委托不存在")
+		return
+	}
+	if strings.HasSuffix(snapshot.Symbol, ".HK") {
+		if err := cancelHongKongLimitOrderDB(pgdb.GetClient(), snapshot.CustomerID, snapshot.ID, time.Now()); err != nil {
+			zap.L().Warn("撤销港股限价委托失败", zap.Uint("order_id", snapshot.ID), zap.Error(err))
+			response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
+			return
+		}
+		response.ReturnData(c, nil)
 		return
 	}
 	err = pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
@@ -213,27 +237,48 @@ func MatchPendingLimitOrders() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !settings.Trade.AllDay && !isMobileTradingTime(time.Now(), settings.Trade.MorningStart, settings.Trade.MorningEnd, settings.Trade.AfternoonStart, settings.Trade.AfternoonEnd) {
-		return 0, nil
-	}
 	var ids []uint
 	if err := pgdb.GetClient().Model(&system.LimitOrder{}).Where("status = ? AND deleted_at IS NULL", limitOrderPending).Order("id ASC").Pluck("id", &ids).Error; err != nil {
 		return 0, err
 	}
 	matched := 0
+	var failures []error
 	for _, id := range ids {
 		ok, err := matchLimitOrder(id, settings)
 		if err != nil {
+			zap.L().Warn("限价委托撮合失败", zap.Uint("order_id", id), zap.Error(err))
+			failures = append(failures, fmt.Errorf("委托 %d: %w", id, err))
 			continue
 		}
 		if ok {
 			matched++
 		}
 	}
-	return matched, nil
+	return matched, errors.Join(failures...)
 }
 
 func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
+	var snapshot system.LimitOrder
+	if err := pgdb.GetClient().First(&snapshot, id).Error; err != nil {
+		return false, err
+	}
+	if snapshot.Status != limitOrderPending {
+		return false, nil
+	}
+	if strings.HasSuffix(snapshot.Symbol, ".HK") {
+		now := time.Now()
+		if !hongKongLimitTradingTime(now) || !settings.HKTrade.Enabled {
+			return false, nil
+		}
+		quote, err := fetchHongKongTradeQuote(context.Background(), strings.TrimSuffix(snapshot.Symbol, ".HK"))
+		if err != nil {
+			return false, err
+		}
+		return matchHongKongLimitOrderDB(pgdb.GetClient(), snapshot.CustomerID, id, quote, now)
+	}
+	if !settings.Trade.AllDay && !isMobileTradingTime(time.Now(), settings.Trade.MorningStart, settings.Trade.MorningEnd, settings.Trade.AfternoonStart, settings.Trade.AfternoonEnd) {
+		return false, nil
+	}
 	matched := false
 	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
 		var order system.LimitOrder
@@ -358,5 +403,12 @@ func releaseLimitOrderFreeze(tx *gorm.DB, order *system.LimitOrder) error {
 func toLimitOrderView(order system.LimitOrder) limitOrderView {
 	code := strings.Split(order.Symbol, ".")[0]
 	labels := map[string]string{limitOrderPending: "待成交", limitOrderFilled: "已成交", limitOrderCancelled: "已撤单"}
-	return limitOrderView{ID: order.ID, Code: code, Symbol: order.Symbol, StockName: order.StockName, Direction: order.Direction, LimitPrice: order.LimitPrice, Quantity: order.Quantity, Status: order.Status, StatusLabel: labels[order.Status], FrozenAmount: order.FrozenAmount, ExecutedPrice: order.ExecutedPrice, CreatedAt: order.CreatedAt.Unix(), FilledAt: order.FilledAt, CancelledAt: order.CancelledAt}
+	currency, note := "CNY", ""
+	if strings.HasSuffix(order.Symbol, ".HK") {
+		currency = "HKD"
+		if order.Status == limitOrderPending {
+			note = "仅在港股交易时段内按有效买卖盘口模拟成交；无盘口、零挂量、过期行情或未达限价时继续等待，可撤单解冻"
+		}
+	}
+	return limitOrderView{ID: order.ID, Code: code, Symbol: order.Symbol, StockName: order.StockName, Direction: order.Direction, LimitPrice: order.LimitPrice, Quantity: order.Quantity, Status: order.Status, StatusLabel: labels[order.Status], FrozenAmount: order.FrozenAmount, ExecutedPrice: order.ExecutedPrice, CreatedAt: order.CreatedAt.Unix(), FilledAt: order.FilledAt, CancelledAt: order.CancelledAt, Currency: currency, QuoteAt: order.QuoteAt, MatchingNote: note}
 }

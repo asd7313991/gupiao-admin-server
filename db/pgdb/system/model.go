@@ -134,6 +134,8 @@ type Customer struct {
 	BankAddress           string  `json:"bank_address"`
 	GroupName             string  `json:"group_name" gorm:"default:内部"`
 	Balance               float64 `json:"balance" gorm:"default:0"`
+	HKDBalance            float64 `json:"hkd_balance" gorm:"not null;default:0"`
+	HKDFrozenBalance      float64 `json:"hkd_frozen_balance" gorm:"not null;default:0"`
 	StrategyBalance       float64 `json:"strategy_balance" gorm:"default:0"`
 	FrozenBalance         float64 `json:"frozen_balance" gorm:"default:0"`
 	TotalProfit           float64 `json:"total_profit" gorm:"default:0"`
@@ -159,6 +161,20 @@ type CustomerFundRecord struct {
 	Amount     float64 `json:"amount"`
 	Balance    float64 `json:"balance"`
 	Remark     string  `json:"remark"`
+}
+
+// CurrencyExchange 保存兑换请求与成交汇率，客户请求编号唯一以防止重试重复扣款。
+type CurrencyExchange struct {
+	gorm.Model
+	CustomerID uint    `json:"customer_id" gorm:"not null;uniqueIndex:idx_exchange_request"`
+	RequestID  string  `json:"request_id" gorm:"size:64;not null;uniqueIndex:idx_exchange_request"`
+	From       string  `json:"from_currency"`
+	To         string  `json:"to_currency"`
+	Amount     float64 `json:"amount"`
+	Received   float64 `json:"received"`
+	Rate       float64 `json:"rate"`
+	CNYBalance float64 `json:"cny_balance"`
+	HKDBalance float64 `json:"hkd_balance"`
 }
 
 // DailyManagementFee 记录每日持仓管理费，客户与计费日期唯一以避免重复扣款。
@@ -242,6 +258,17 @@ type TradePosition struct {
 	BuyAt           int64   `json:"buy_at"`
 }
 
+// HongKongTradeRequest 保存模拟成交回执，避免网络重试重复扣款。
+type HongKongTradeRequest struct {
+	gorm.Model
+	CustomerID uint   `gorm:"not null;uniqueIndex:idx_hk_trade_request"`
+	RequestID  string `gorm:"size:64;not null;uniqueIndex:idx_hk_trade_request"`
+	Code       string
+	Direction  string
+	Quantity   float64
+	Result     string
+}
+
 // TradeRecord 保存买入、卖出等成交记录；常用筛选字段均建索引。
 type TradeRecord struct {
 	gorm.Model
@@ -263,7 +290,8 @@ type TradeRecord struct {
 // LimitOrder 保存客户限价委托及对应冻结资金或持仓。
 type LimitOrder struct {
 	gorm.Model
-	CustomerID     uint    `json:"customer_id" gorm:"index:idx_limit_order_customer_status;not null"`
+	CustomerID     uint    `json:"customer_id" gorm:"index:idx_limit_order_customer_status;uniqueIndex:idx_limit_order_request;not null"`
+	RequestID      *string `json:"request_id,omitempty" gorm:"size:64;uniqueIndex:idx_limit_order_request"`
 	Symbol         string  `json:"symbol" gorm:"index:idx_limit_order_symbol_status;not null"`
 	StockName      string  `json:"stock_name"`
 	Direction      string  `json:"direction"`
@@ -276,6 +304,7 @@ type LimitOrder struct {
 	TradeRecordID  uint    `json:"trade_record_id"`
 	FilledAt       int64   `json:"filled_at"`
 	CancelledAt    int64   `json:"cancelled_at"`
+	QuoteAt        int64   `json:"quote_at"`
 }
 
 // CustomerWatchlist 保存客户自选证券，客户与证券组合唯一。
@@ -302,6 +331,7 @@ type StockSecurity struct {
 	Turnover   float64 `json:"turnover"`
 	Status     uint    `json:"status" gorm:"default:1;index"`
 	Source     string  `json:"source"`
+	QuoteAt    int64   `json:"quote_at" gorm:"not null;default:0"`
 }
 
 // SystemTenantMenuScope 定义每个租户可用的最大菜单范围

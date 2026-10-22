@@ -65,6 +65,7 @@ func FinanceSummary(c *gin.Context) {
 	}
 	response.ReturnData(c, gin.H{
 		"balance": item.Balance, "frozen_balance": item.FrozenBalance,
+		"hkd_balance": item.HKDBalance, "hkd_frozen_balance": item.HKDFrozenBalance,
 		"bank_name": item.BankName, "bank_card_masked": mask(item.BankCard, 4, 4),
 		"verified": item.Verified, "has_trade_pin": item.TradePassword != "",
 		"quick_amounts": parseQuickAmounts(settings.Recharge.QuickAmounts),

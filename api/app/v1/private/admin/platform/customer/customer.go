@@ -3,6 +3,7 @@ package customer
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
@@ -29,6 +31,7 @@ type customerResponse struct {
 	BankAddress        string    `json:"bank_address"`
 	GroupName          string    `json:"group_name"`
 	Balance            float64   `json:"balance"`
+	HKDBalance         float64   `json:"hkd_balance"`
 	StrategyBalance    float64   `json:"strategy_balance"`
 	FrozenBalance      float64   `json:"frozen_balance"`
 	TotalProfit        float64   `json:"total_profit"`
@@ -50,7 +53,7 @@ func toResponse(customer system.Customer) customerResponse {
 	if !hasIdentityMaterials(customer) {
 		verified = system.StatusDisabled
 	}
-	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, HKDBalance: customer.HKDBalance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
 }
 
 func materialDataURL(path string) string {
@@ -190,7 +193,7 @@ func Update(c *gin.Context) {
 		return
 	}
 	input.CreatedAt = current.CreatedAt
-	if err := pgdb.GetClient().Omit("password", "trade_password", "balance", "strategy_balance", "frozen_balance", "total_profit", "total_loss").Save(&input).Error; err != nil {
+	if err := pgdb.GetClient().Omit("password", "trade_password", "balance", "hkd_balance", "strategy_balance", "frozen_balance", "total_profit", "total_loss").Save(&input).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "更新客户失败")
 		return
 	}
@@ -204,26 +207,40 @@ func Deposit(c *gin.Context) {
 		Amount   float64 `json:"amount"`
 		Remark   string  `json:"remark"`
 	}
-	if !middleware.CheckParam(&input, c) || input.Amount == 0 {
+	if !middleware.CheckParam(&input, c) {
+		return
+	}
+	if input.Amount == 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "入账金额不能为零")
+		return
+	}
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	}
+	if input.Currency != "CNY" && input.Currency != "HKD" {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "入账币种必须是CNY或HKD")
 		return
 	}
 	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
 		var customer system.Customer
-		if err := tx.First(&customer, input.ID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, input.ID).Error; err != nil {
 			return err
 		}
 		if customer.FundStatus != system.StatusEnabled {
 			return fmt.Errorf("资金账户已锁定")
 		}
-		customer.Balance += input.Amount
-		if customer.Balance < 0 {
+		balance, column := customer.Balance, "balance"
+		if input.Currency == "HKD" {
+			balance, column = customer.HKDBalance, "hkd_balance"
+		}
+		balance += input.Amount
+		if balance < 0 {
 			return fmt.Errorf("余额不足")
 		}
-		if err := tx.Save(&customer).Error; err != nil {
+		if err := tx.Model(&customer).Update(column, balance).Error; err != nil {
 			return err
 		}
-		return tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Currency: input.Currency, Amount: input.Amount, Balance: customer.Balance, Remark: input.Remark}).Error
+		return tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Currency: input.Currency, Amount: input.Amount, Balance: balance, Remark: input.Remark}).Error
 	})
 	if err != nil {
 		response.ReturnError(c, response.DATA_LOSS, err.Error())

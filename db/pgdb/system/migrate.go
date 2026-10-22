@@ -32,6 +32,8 @@ func migrateTable(db *gorm.DB) error {
 		&SystemUserLoginLog{},
 		&Customer{},
 		&CustomerFundRecord{},
+		&CurrencyExchange{},
+		&HongKongTradeRequest{},
 		&DailyManagementFee{},
 		&FinanceRecharge{},
 		&FinanceWithdrawal{},

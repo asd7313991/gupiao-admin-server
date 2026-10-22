@@ -115,6 +115,8 @@ func positionQuoteSymbol(symbol string) string {
 		return "sz" + parts[0]
 	case "BJ":
 		return "bj" + parts[0]
+	case "HK":
+		return "hk" + parts[0]
 	default:
 		return ""
 	}
@@ -201,6 +203,10 @@ func SavePosition(c *gin.Context) {
 		input.Symbol = security.Symbol
 		input.StockName = security.Name
 		input.Currency = "CNY"
+		if strings.HasSuffix(security.Symbol, ".HK") {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "港股持仓请通过港币模拟买卖建立，不支持手工新增")
+			return
+		}
 		input.AvailableQty = input.PositionQty
 		input.CurrentPrice = security.LastPrice
 		if input.CurrentPrice <= 0 {
@@ -236,6 +242,10 @@ func SavePosition(c *gin.Context) {
 			return
 		}
 		input.TradePosition.CreatedAt = existing.CreatedAt
+		if strings.HasSuffix(existing.Symbol, ".HK") || strings.HasSuffix(input.Symbol, ".HK") {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "港股持仓请通过模拟买卖调整，不能直接覆盖账务")
+			return
+		}
 		if err := pgdb.GetClient().Save(&input.TradePosition).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "修改持仓失败")
 			return
@@ -263,6 +273,15 @@ func DeletePosition(c *gin.Context) {
 	}
 	if !middleware.CheckParam(&input, c) || input.ID == 0 {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "持仓 ID 无效")
+		return
+	}
+	var position system.TradePosition
+	if err := pgdb.GetClient().First(&position, input.ID).Error; err != nil {
+		response.ReturnError(c, response.NOT_FOUND, "持仓不存在")
+		return
+	}
+	if strings.HasSuffix(position.Symbol, ".HK") {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "港股请通过卖出或强平结算，不支持直接删除")
 		return
 	}
 	if err := pgdb.GetClient().Delete(&system.TradePosition{}, input.ID).Error; err != nil {
@@ -321,10 +340,18 @@ func ForceClosePosition(c *gin.Context) {
 		price := security.LastPrice
 		quantity := position.PositionQty
 		amount, realized, settlement := calculateForceCloseSettlement(position, price)
-		customer.Balance = roundPositionMoney(customer.Balance + settlement)
-		if realized >= 0 {
+		hongKong := strings.HasSuffix(position.Symbol, ".HK")
+		balance := &customer.Balance
+		if hongKong {
+			if position.Currency != "HKD" || position.Leverage != 1 {
+				return fmt.Errorf("港股持仓币种或杠杆异常")
+			}
+			balance = &customer.HKDBalance
+		}
+		*balance = roundPositionMoney(*balance + settlement)
+		if !hongKong && realized >= 0 {
 			customer.TotalProfit = roundPositionMoney(customer.TotalProfit + realized)
-		} else {
+		} else if !hongKong {
 			customer.TotalLoss = roundPositionMoney(customer.TotalLoss - realized)
 		}
 		closedAt := time.Now().Unix()
@@ -343,7 +370,7 @@ func ForceClosePosition(c *gin.Context) {
 			fundDirection = "出账"
 			fundAmount = -fundAmount
 		}
-		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "后台强平", Direction: fundDirection, Currency: position.Currency, Amount: roundPositionMoney(fundAmount), Balance: customer.Balance, Remark: fmt.Sprintf("%s %s 按当前价 %.4f 强平 %.0f 股", position.StockName, position.Symbol, price, quantity)}).Error; err != nil {
+		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "后台强平", Direction: fundDirection, Currency: position.Currency, Amount: roundPositionMoney(fundAmount), Balance: *balance, Remark: fmt.Sprintf("%s %s 按当前价 %.4f 强平 %.0f 股", position.StockName, position.Symbol, price, quantity)}).Error; err != nil {
 			return err
 		}
 		position.PositionQty, position.AvailableQty = 0, 0
@@ -358,7 +385,7 @@ func ForceClosePosition(c *gin.Context) {
 		}
 		result.ID, result.CustomerID, result.Symbol = position.ID, customer.ID, position.Symbol
 		result.Price, result.Quantity, result.Amount = price, quantity, amount
-		result.Realized, result.BalanceAfter = realized, customer.Balance
+		result.Realized, result.BalanceAfter = realized, *balance
 		return nil
 	})
 	if rejection != "" {

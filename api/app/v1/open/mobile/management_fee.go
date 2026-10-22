@@ -25,7 +25,7 @@ func ProcessDailyManagementFees(now time.Time) (processed int, forced int, err e
 	chargeDate := now.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02")
 	var customerIDs []uint
 	if err := pgdb.GetClient().Model(&system.TradePosition{}).
-		Where("position_qty > 0 AND deleted_at IS NULL").
+		Where("position_qty > 0 AND deleted_at IS NULL AND symbol NOT LIKE ?", "%.HK").
 		Distinct("customer_id").Pluck("customer_id", &customerIDs).Error; err != nil {
 		return 0, 0, err
 	}
@@ -46,8 +46,12 @@ func ProcessDailyManagementFees(now time.Time) (processed int, forced int, err e
 }
 
 func processCustomerManagementFee(customerID uint, chargeDate string, rate float64, now time.Time) (bool, error) {
+	return processCustomerManagementFeeDB(pgdb.GetClient(), customerID, chargeDate, rate, now)
+}
+
+func processCustomerManagementFeeDB(db *gorm.DB, customerID uint, chargeDate string, rate float64, now time.Time) (bool, error) {
 	forced := false
-	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var existing int64
 		if err := tx.Model(&system.DailyManagementFee{}).Where("customer_id = ? AND charge_date = ?", customerID, chargeDate).Count(&existing).Error; err != nil {
 			return err
@@ -60,7 +64,7 @@ func processCustomerManagementFee(customerID uint, chargeDate string, rate float
 			return err
 		}
 		var positions []system.TradePosition
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND position_qty > 0 AND deleted_at IS NULL", customerID).Find(&positions).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND position_qty > 0 AND deleted_at IS NULL AND symbol NOT LIKE ?", customerID, "%.HK").Find(&positions).Error; err != nil {
 			return err
 		}
 		marketValue := currentPositionsMarketValue(tx, positions)
@@ -114,7 +118,7 @@ func dailyManagementFee(marketValue, rate float64) float64 {
 
 func cancelCustomerPendingOrders(tx *gorm.DB, customer *system.Customer, customerID uint, cancelledAt int64) error {
 	var orders []system.LimitOrder
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND status = ? AND deleted_at IS NULL", customerID, limitOrderPending).Find(&orders).Error; err != nil {
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND status = ? AND deleted_at IS NULL AND symbol NOT LIKE ?", customerID, limitOrderPending, "%.HK").Find(&orders).Error; err != nil {
 		return err
 	}
 	for index := range orders {

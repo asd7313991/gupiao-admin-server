@@ -38,4 +38,16 @@ func TestParseLivePositionQuotes(t *testing.T) {
 	if quotes["sh600802"] != 6.78 {
 		t.Fatalf("实时行情解析错误：%v", quotes)
 	}
+
+}
+
+func TestHongKongPositionQuoteSymbol(t *testing.T) {
+	if got := positionQuoteSymbol("03774.HK"); got != "hk03774" {
+		t.Fatalf("港股报价代码=%s", got)
+	}
+	position := system.TradePosition{PositionQty: 1000, TotalCost: 35500, Margin: 35500, Leverage: 1, Currency: "HKD"}
+	amount, realized, settlement := calculateForceCloseSettlement(position, 36)
+	if amount != 36000 || realized != 500 || settlement != 36000 {
+		t.Fatalf("港币全额结算 amount=%v realized=%v settlement=%v", amount, realized, settlement)
+	}
 }

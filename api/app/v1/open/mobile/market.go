@@ -35,6 +35,8 @@ type securityView struct {
 	Volume     float64 `json:"volume"`
 	Amount     float64 `json:"amount"`
 	Turnover   float64 `json:"turnover"`
+	Source     string  `json:"source"`
+	QuoteAt    int64   `json:"quote_at"`
 	UpdatedAt  int64   `json:"updated_at"`
 }
 
@@ -51,6 +53,8 @@ type securityDetailView struct {
 	Volume     float64 `json:"volume"`
 	Amount     float64 `json:"amount"`
 	Turnover   float64 `json:"turnover"`
+	Source     string  `json:"source"`
+	QuoteAt    int64   `json:"quote_at"`
 	UpdatedAt  int64   `json:"updated_at"`
 	Open       float64 `json:"open"`
 	High       float64 `json:"high"`
@@ -125,7 +129,7 @@ type tencentFiveDayResponse struct {
 }
 
 func toSecurityView(item system.StockSecurity) securityView {
-	return securityView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, UpdatedAt: item.UpdatedAt.Unix()}
+	return securityView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
 }
 
 func ListSecurities(c *gin.Context) {
@@ -136,7 +140,18 @@ func ListSecurities(c *gin.Context) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	db := pgdb.GetClient().Model(&system.StockSecurity{}).Where("deleted_at IS NULL AND status = ?", system.StatusEnabled)
+	hongKong := c.Query("market") == "港股"
+	db := pgdb.GetClient().Model(&system.StockSecurity{}).Where("deleted_at IS NULL")
+	if hongKong {
+		// 本阶段停用表示不可交易，采集记录允许只读展示，不修改证券启停状态。
+		db = db.Where("market = ? AND symbol LIKE ? AND source IN ?", "港股", "%.HK", []string{"sina", "sina/tencent", "sina/unavailable"})
+		if c.Query("sort_by") == "turnover" {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "港股换手率数据暂未接入")
+			return
+		}
+	} else {
+		db = db.Where("status = ?", system.StatusEnabled).Where("COALESCE(symbol, '') NOT LIKE ?", "%.HK").Where("COALESCE(market, '') NOT IN ?", []string{"港股", "HK"})
+	}
 	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
 		db = db.Where("code LIKE ? OR symbol LIKE ? OR name LIKE ?", "%"+keyword+"%", "%"+keyword+"%", "%"+keyword+"%")
 	}
@@ -183,7 +198,11 @@ func SecurityDetail(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "读取证券详情失败")
 		return
 	}
-	detail := securityDetailView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, UpdatedAt: item.UpdatedAt.Unix()}
+	detail := securityDetailView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
+	if isHongKongSecurity(item) {
+		response.ReturnData(c, detail)
+		return
+	}
 	points, previousClose, fetchErr := fetchKLines(item, "day", 2)
 	if fetchErr == nil && len(points) > 0 {
 		latest := points[len(points)-1]
@@ -218,6 +237,10 @@ func SecurityKLines(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "证券不存在")
 		return
 	}
+	if isHongKongSecurity(item) {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "港股图表暂未接入")
+		return
+	}
 	period := c.DefaultQuery("period", "day")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "120"))
 	if limit < 20 {
@@ -245,6 +268,10 @@ func SecurityOrderBook(c *gin.Context) {
 	code := strings.TrimSpace(c.Param("code"))
 	if err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&item).Error; err != nil {
 		response.ReturnError(c, response.NOT_FOUND, "证券不存在")
+		return
+	}
+	if isHongKongSecurity(item) {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "港股盘口暂未开放，模拟交易请使用独立港币入口")
 		return
 	}
 	book, err := fetchOrderBook(item)

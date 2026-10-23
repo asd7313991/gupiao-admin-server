@@ -15,6 +15,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/hkquote"
+	"api-server/util/positionquote"
 )
 
 var ErrHongKongSyncRunning = errors.New("港股采集正在执行")
@@ -113,7 +114,8 @@ func refreshHongKongSnapshot(ctx context.Context, client *http.Client, quoteURL,
 func updateHongKongBatch(ctx context.Context, client *http.Client, quoteURL, eastmoneyURL string, items []system.StockSecurity) error {
 	codes, symbols := make([]string, 0, len(items)), make([]string, 0, len(items))
 	for _, item := range items {
-		codes, symbols = append(codes, item.Code), append(symbols, "hk"+item.Code)
+		codes = append(codes, item.Code)
+		symbols = append(symbols, positionquote.TencentCodes(item.Symbol)...)
 	}
 	var eastmoney map[string]hkquote.Quote
 	var tencent map[string]system.StockSecurity
@@ -157,6 +159,9 @@ func updateHongKongBatch(ctx context.Context, client *http.Client, quoteURL, eas
 			security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate
 			security.Volume, security.Amount, security.QuoteAt = quote.Volume, quote.Amount, quote.QuoteAt
 			security.Source = "sina/tencent"
+		}
+		if quote, ok := tencent[security.Code]; ok && quote.HKMetadataAt > 0 {
+			security.HKLotSize, security.HKCurrency, security.HKKind, security.HKMetadataAt = quote.HKLotSize, quote.HKCurrency, quote.HKKind, quote.HKMetadataAt
 		}
 		if quote, ok := eastmoney[security.Code]; ok && quote.QuoteAt >= security.QuoteAt {
 			security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate

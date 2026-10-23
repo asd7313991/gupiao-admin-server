@@ -34,6 +34,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	account.POST("/trade/hong-kong/orders", PlaceHongKongOrder)
 	account.POST("/trade/hong-kong/limit-orders", PlaceHongKongLimitOrder)
 	account.GET("/trade/positions", ListCustomerPositions)
+	account.GET("/trade/position-valuations", ListCustomerPositionValuations)
 	account.GET("/trade/holdings", ListCustomerHoldings)
 	account.GET("/trade/records", ListCustomerTradeRecords)
 	account.POST("/trade/orders", PlaceOrder)

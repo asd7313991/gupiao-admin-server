@@ -40,6 +40,17 @@ func Symbol(symbol string) string {
 	return ""
 }
 
+func TencentCodes(symbol string) []string {
+	code := Symbol(symbol)
+	if code == "" {
+		return nil
+	}
+	if strings.HasSuffix(symbol, ".HK") {
+		return []string{"r_" + code, code}
+	}
+	return []string{code}
+}
+
 func ValidateTime(at int64, now time.Time, hk bool) error {
 	if at <= 0 || at > now.Unix()+60 {
 		return fmt.Errorf("报价时间无效或超前")
@@ -86,6 +97,7 @@ func Parse(body string, requested map[string]string, now time.Time) (map[string]
 func parseAvailable(body string, requested map[string]string, now time.Time) (map[string]Quote, error) {
 	quotes := make(map[string]Quote)
 	seen := make(map[string]bool)
+	candidates := make(map[string]Quote)
 	var firstErr error
 	for _, line := range strings.Split(body, ";") {
 		line = strings.TrimSpace(line)
@@ -93,16 +105,17 @@ func parseAvailable(body string, requested map[string]string, now time.Time) (ma
 		if separator < 0 {
 			continue
 		}
-		symbol, ok := requested[strings.TrimPrefix(line[:separator], "v_")]
+		code := strings.TrimPrefix(line[:separator], "v_")
+		symbol, ok := requested[code]
 		if !ok {
 			continue
 		}
-		if seen[symbol] {
-			delete(quotes, symbol)
+		if seen[code] {
+			delete(candidates, code)
 			firstErr = fmt.Errorf("%s 返回重复报价", symbol)
 			continue
 		}
-		seen[symbol] = true
+		seen[code] = true
 		fields := strings.Split(strings.Trim(line[separator+1:], `"`), "~")
 		quote, err := parseOne(symbol, fields, now)
 		if err != nil {
@@ -111,16 +124,24 @@ func parseAvailable(body string, requested map[string]string, now time.Time) (ma
 			}
 			continue
 		}
-		quotes[symbol] = quote
+		candidates[code] = quote
+	}
+	for code, quote := range candidates {
+		symbol := requested[code]
+		best := quotes[symbol]
+		if quote.At > best.At || quote.At == best.At && strings.HasPrefix(code, "r_hk") {
+			quotes[symbol] = quote
+		}
 	}
 	for _, symbol := range requested {
 		if _, ok := quotes[symbol]; !ok {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("%s 缺少有效持仓报价", symbol)
 			}
+			return quotes, firstErr
 		}
 	}
-	return quotes, firstErr
+	return quotes, nil
 }
 
 func parseOne(symbol string, fields []string, now time.Time) (Quote, error) {
@@ -150,16 +171,19 @@ func Fetch(ctx context.Context, client *http.Client, endpoint string, symbols []
 	requested := make(map[string]string)
 	codes := make([]string, 0, len(symbols))
 	for _, symbol := range symbols {
-		code := Symbol(symbol)
-		if code == "" {
+		aliases := TencentCodes(symbol)
+		if len(aliases) == 0 {
 			return nil, fmt.Errorf("持仓证券代码无效：%s", symbol)
 		}
-		if _, exists := requested[code]; !exists {
-			requested[code] = symbol
-			codes = append(codes, code)
+		for _, code := range aliases {
+			if _, exists := requested[code]; !exists {
+				requested[code] = symbol
+				codes = append(codes, code)
+			}
 		}
 	}
 	quotes := make(map[string]Quote)
+	var firstErr error
 	for start := 0; start < len(codes); start += 100 {
 		end := min(start+100, len(codes))
 		batch := make(map[string]string)
@@ -171,11 +195,21 @@ func Fetch(ctx context.Context, client *http.Client, endpoint string, symbols []
 			return nil, err
 		}
 		values, err := Parse(string(body), batch, now)
-		if err != nil {
-			return nil, err
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 		for symbol, quote := range values {
-			quotes[symbol] = quote
+			if quote.At >= quotes[symbol].At {
+				quotes[symbol] = quote
+			}
+		}
+	}
+	for _, symbol := range requested {
+		if _, ok := quotes[symbol]; !ok {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s 缺少有效持仓报价", symbol)
+			}
+			return nil, firstErr
 		}
 	}
 	return quotes, nil

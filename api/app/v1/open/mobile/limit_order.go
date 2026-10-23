@@ -270,7 +270,11 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		if !hongKongTradeTime(now, settings) || !settings.HKTrade.Enabled {
 			return false, nil
 		}
-		quote, err := fetchHongKongTradeQuote(context.Background(), strings.TrimSuffix(snapshot.Symbol, ".HK"))
+		var security system.StockSecurity
+		if err := pgdb.GetClient().Where("symbol = ?", snapshot.Symbol).First(&security).Error; err != nil {
+			return false, err
+		}
+		quote, err := loadHongKongTradeQuote(context.Background(), security)
 		if err != nil {
 			return false, err
 		}

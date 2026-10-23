@@ -96,7 +96,7 @@ func PlaceHongKongLimitOrder(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "港股证券不存在")
 		return
 	}
-	quote, err := fetchHongKongTradeQuote(c.Request.Context(), security.Code)
+	quote, err := loadHongKongTradeQuote(c.Request.Context(), security)
 	if err != nil {
 		zap.L().Warn("读取港股委托基础行情失败", zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "读取港股每手股数及币种失败，请使用原编号重试")

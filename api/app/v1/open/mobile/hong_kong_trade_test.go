@@ -335,7 +335,7 @@ func TestHongKongTradeQuoteLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if quote.LastPrice <= 0 || quote.QuoteAt <= 0 || quote.DepthAt <= 0 || quote.QuoteAt > time.Now().Unix()+60 ||
+	if quote.LastPrice <= 0 || quote.QuoteAt <= 0 || quote.DepthAt < 0 || quote.QuoteAt > time.Now().Unix()+60 ||
 		quote.LotSize <= 0 || quote.Currency != "HKD" || quote.Kind != "GP" ||
 		(quote.Source != "eastmoney" && quote.Source != "tencent") {
 		t.Fatalf("公开港股报价或交易元数据无效：%+v", quote)

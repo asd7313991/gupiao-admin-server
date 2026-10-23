@@ -98,7 +98,7 @@ func TestCollectHongKongUntilEmptyPage(t *testing.T) {
 			}
 		case "/quotes":
 			quoteCalls++
-			if r.URL.Query().Get("q") != "hk00005,hk00700,hk09988" {
+			if r.URL.Query().Get("q") != "r_hk00005,hk00005,r_hk00700,hk00700,r_hk09988,hk09988" {
 				t.Error("腾讯港股代码未保留前导零")
 			}
 			fmt.Fprint(w, hongKongQuoteFixture("00005", "145.5", "2026/10/20 14:00:01")+"\n"+

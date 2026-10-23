@@ -317,21 +317,25 @@ type CustomerWatchlist struct {
 // StockSecurity 缓存公开行情源同步的证券基础数据。
 type StockSecurity struct {
 	gorm.Model
-	Code       string  `json:"code" gorm:"uniqueIndex;not null"`
-	Symbol     string  `json:"symbol" gorm:"uniqueIndex;not null"`
-	Market     string  `json:"market" gorm:"index"`
-	Name       string  `json:"name" gorm:"index"`
-	Exchange   string  `json:"exchange" gorm:"index"`
-	Board      string  `json:"board" gorm:"index"`
-	ListDate   string  `json:"list_date" gorm:"index"`
-	LastPrice  float64 `json:"last_price"`
-	ChangeRate float64 `json:"change_rate"`
-	Volume     float64 `json:"volume"`
-	Amount     float64 `json:"amount"`
-	Turnover   float64 `json:"turnover"`
-	Status     uint    `json:"status" gorm:"default:1;index"`
-	Source     string  `json:"source"`
-	QuoteAt    int64   `json:"quote_at" gorm:"not null;default:0"`
+	Code         string  `json:"code" gorm:"uniqueIndex;not null"`
+	Symbol       string  `json:"symbol" gorm:"uniqueIndex;not null"`
+	Market       string  `json:"market" gorm:"index"`
+	Name         string  `json:"name" gorm:"index"`
+	Exchange     string  `json:"exchange" gorm:"index"`
+	Board        string  `json:"board" gorm:"index"`
+	ListDate     string  `json:"list_date" gorm:"index"`
+	LastPrice    float64 `json:"last_price"`
+	ChangeRate   float64 `json:"change_rate"`
+	Volume       float64 `json:"volume"`
+	Amount       float64 `json:"amount"`
+	Turnover     float64 `json:"turnover"`
+	Status       uint    `json:"status" gorm:"default:1;index"`
+	Source       string  `json:"source"`
+	QuoteAt      int64   `json:"quote_at" gorm:"not null;default:0"`
+	HKLotSize    float64 `json:"hk_lot_size" gorm:"not null;default:0"`
+	HKCurrency   string  `json:"hk_currency"`
+	HKKind       string  `json:"hk_kind"`
+	HKMetadataAt int64   `json:"hk_metadata_at" gorm:"not null;default:0"`
 }
 
 // SystemTenantMenuScope 定义每个租户可用的最大菜单范围

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +40,7 @@ type hongKongQuote struct {
 	Kind        string           `json:"kind"`
 	QuoteAt     int64            `json:"quote_at"`
 	DepthAt     int64            `json:"depth_at"`
+	MetadataAt  int64            `json:"metadata_at"`
 	Source      string           `json:"source"`
 	Bid         []orderBookLevel `json:"bid"`
 	Ask         []orderBookLevel `json:"ask"`
@@ -55,7 +57,25 @@ func fetchHongKongTradeQuote(ctx context.Context, code string) (hongKongQuote, e
 	return fetchHongKongTradeQuoteWithSources(ctx, &http.Client{Timeout: 8 * time.Second}, code, "https://qt.gtimg.cn/q=hk", hkquote.EastmoneyURL)
 }
 
-func fetchHongKongTradeQuoteWithSources(ctx context.Context, client *http.Client, code, tencentURL, eastmoneyURL string) (hongKongQuote, error) {
+func loadHongKongTradeQuote(ctx context.Context, security system.StockSecurity) (hongKongQuote, error) {
+	cached := hkquote.Metadata{LotSize: security.HKLotSize, Currency: security.HKCurrency, Kind: security.HKKind, At: security.HKMetadataAt}
+	quote, err := fetchHongKongTradeQuoteWithSources(ctx, &http.Client{Timeout: 8 * time.Second}, security.Code, "https://qt.gtimg.cn/q=hk", hkquote.EastmoneyURL, cached)
+	if err != nil {
+		return hongKongQuote{}, err
+	}
+	metadata := hkquote.Metadata{LotSize: quote.LotSize, Currency: quote.Currency, Kind: quote.Kind, At: quote.MetadataAt}
+	if metadata.ValidAt(time.Now()) && metadata.At > security.HKMetadataAt {
+		err = pgdb.GetClient().WithContext(ctx).Model(&system.StockSecurity{}).
+			Where("id = ? AND hk_metadata_at <= ?", security.ID, metadata.At).
+			Updates(map[string]any{"hk_lot_size": metadata.LotSize, "hk_currency": metadata.Currency, "hk_kind": metadata.Kind, "hk_metadata_at": metadata.At}).Error
+		if err != nil {
+			return hongKongQuote{}, fmt.Errorf("保存港股证券资料失败：%w", err)
+		}
+	}
+	return quote, nil
+}
+
+func fetchHongKongTradeQuoteWithSources(ctx context.Context, client *http.Client, code, tencentURL, eastmoneyURL string, cached ...hkquote.Metadata) (hongKongQuote, error) {
 	if len(code) != 5 {
 		return hongKongQuote{}, fmt.Errorf("港股代码必须为五位数字")
 	}
@@ -64,18 +84,35 @@ func fetchHongKongTradeQuoteWithSources(ctx context.Context, client *http.Client
 			return hongKongQuote{}, fmt.Errorf("港股代码无效")
 		}
 	}
-	// 腾讯提供每手、币种、品种和盘口，东方财富仅替换时间较新的有效价格，不推测交易元数据。
-	quote, err := fetchTencentHongKongTradeQuote(ctx, client, code, tencentURL)
-	if err != nil {
-		return hongKongQuote{}, fmt.Errorf("读取港股交易元数据失败：%w", err)
-	}
-	quotes, err := hkquote.FetchEastmoney(ctx, client, eastmoneyURL, []string{code})
+	var quote hongKongQuote
+	var quotes map[string]hkquote.Quote
+	var tencentErr, eastmoneyErr error
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		quote, tencentErr = fetchTencentHongKongTradeQuote(ctx, client, code, tencentURL)
+	}()
+	go func() {
+		defer workers.Done()
+		quotes, eastmoneyErr = hkquote.FetchEastmoney(ctx, client, eastmoneyURL, []string{code})
+	}()
+	workers.Wait()
 	if ctx.Err() != nil {
 		return hongKongQuote{}, ctx.Err()
 	}
-	if err != nil {
-		zap.L().Warn("东方财富港股报价失败，保留腾讯报价及原始时间", zap.String("code", code), zap.Error(err))
-	} else if primary, ok := quotes[code]; ok && (primary.QuoteAt >= quote.QuoteAt || quote.LastPrice == 0 || quote.QuoteAt > time.Now().Unix()+60) {
+	if tencentErr != nil {
+		zap.L().Warn("腾讯港股交易资料不可用", zap.String("code", code), zap.Error(tencentErr))
+		if len(cached) == 0 || !cached[0].ValidAt(time.Now()) {
+			return hongKongQuote{}, fmt.Errorf("读取港股交易资料失败，且无24小时内已核验资料：%w", tencentErr)
+		}
+		metadata := cached[0]
+		quote = hongKongQuote{Code: code, LotSize: metadata.LotSize, Currency: metadata.Currency, Kind: metadata.Kind, MetadataAt: metadata.At,
+			Bid: []orderBookLevel{}, Ask: []orderBookLevel{}, SyncWarning: "腾讯交易资料暂不可用，使用24小时内已核验的证券资料；没有缓存价格或盘口参与成交"}
+	}
+	if eastmoneyErr != nil {
+		zap.L().Warn("东方财富港股报价失败，保留腾讯报价及原始时间", zap.String("code", code), zap.Error(eastmoneyErr))
+	} else if primary, ok := quotes[code]; ok && primary.QuoteAt <= time.Now().Unix()+60 && (primary.QuoteAt >= quote.QuoteAt || quote.LastPrice == 0 || quote.QuoteAt > time.Now().Unix()+60) {
 		quote.LastPrice, quote.ChangeRate, quote.QuoteAt, quote.Source = primary.LastPrice, primary.ChangeRate, primary.QuoteAt, "eastmoney"
 	} else if !ok {
 		zap.L().Warn("东方财富港股无有效报价，保留腾讯报价及原始时间", zap.String("code", code))
@@ -87,7 +124,7 @@ func fetchHongKongTradeQuoteWithSources(ctx context.Context, client *http.Client
 }
 
 func fetchTencentHongKongTradeQuote(ctx context.Context, client *http.Client, code, endpoint string) (hongKongQuote, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+code, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(endpoint, "hk")+"r_hk"+code+",hk"+code, nil)
 	if err != nil {
 		return hongKongQuote{}, err
 	}
@@ -105,11 +142,56 @@ func fetchTencentHongKongTradeQuote(ctx context.Context, client *http.Client, co
 	if err != nil {
 		return hongKongQuote{}, err
 	}
-	return parseHongKongTradeQuote(string(body), code)
+	var best hongKongQuote
+	var failures []error
+	seen := make(map[string]bool)
+	candidates := make(map[string]hongKongQuote)
+	for _, line := range strings.Split(string(body), ";") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		alias := strings.SplitN(line, "=", 2)[0]
+		if seen[alias] {
+			delete(candidates, alias)
+			failures = append(failures, fmt.Errorf("腾讯港股候选重复：%s", alias))
+			continue
+		}
+		seen[alias] = true
+		candidate, err := parseHongKongTradeQuote(line+";", code)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if candidate.QuoteAt <= 0 || candidate.QuoteAt > time.Now().Unix()+60 {
+			failures = append(failures, fmt.Errorf("腾讯港股原始时间无效或超前"))
+			continue
+		}
+		candidates[alias] = candidate
+	}
+	for alias, candidate := range candidates {
+		if best.Code == "" || candidate.QuoteAt > best.QuoteAt ||
+			candidate.QuoteAt == best.QuoteAt && strings.HasPrefix(alias, "v_r_hk") {
+			best = candidate
+		}
+	}
+	if best.Code == "" {
+		if len(failures) == 0 {
+			failures = append(failures, fmt.Errorf("腾讯港股响应为空"))
+		}
+		return hongKongQuote{}, fmt.Errorf("腾讯港股没有可用报价及证券资料：%w", errors.Join(failures...))
+	}
+	if len(failures) > 0 {
+		zap.L().Warn("腾讯港股部分候选异常，使用其他有效候选", zap.String("code", code), zap.Error(errors.Join(failures...)))
+	}
+	return best, nil
 }
 
 func parseHongKongTradeQuote(body, code string) (hongKongQuote, error) {
 	prefix := `v_hk` + code + `="`
+	if strings.HasPrefix(strings.TrimSpace(body), `v_r_hk`+code+`="`) {
+		prefix = `v_r_hk` + code + `="`
+	}
 	if !strings.HasPrefix(strings.TrimSpace(body), prefix) {
 		return hongKongQuote{}, fmt.Errorf("港股报价代码不匹配")
 	}
@@ -121,24 +203,25 @@ func parseHongKongTradeQuote(body, code string) (hongKongQuote, error) {
 	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 || price > 1_000_000 {
 		return hongKongQuote{}, fmt.Errorf("港股报价无效")
 	}
-	lot, err := strconv.ParseFloat(fields[60], 64)
-	if err != nil || math.IsNaN(lot) || math.IsInf(lot, 0) || lot < 1 || lot > 1_000_000 || lot != math.Trunc(lot) {
-		return hongKongQuote{}, fmt.Errorf("港股每手股数无效")
-	}
-	at, err := time.ParseInLocation("2006/01/02 15:04:05", fields[30], time.FixedZone("Asia/Hong_Kong", 8*3600))
+	metadata, err := hkquote.ParseTencentMetadata(fields)
 	if err != nil {
-		return hongKongQuote{}, fmt.Errorf("港股报价时间无效")
+		return hongKongQuote{}, err
 	}
 	change, err := strconv.ParseFloat(fields[32], 64)
 	if err != nil || math.IsNaN(change) || math.IsInf(change, 0) {
 		return hongKongQuote{}, fmt.Errorf("港股涨跌幅无效")
 	}
 	bid, ask := make([]orderBookLevel, 5), make([]orderBookLevel, 5)
+	var depthAt int64
 	for index := 0; index < 5; index++ {
 		bid[index] = parseHongKongDepthLevel(fields[9+index*2], fields[10+index*2])
 		ask[index] = parseHongKongDepthLevel(fields[19+index*2], fields[20+index*2])
+		if bid[index].Volume > 0 || ask[index].Volume > 0 {
+			depthAt = metadata.At
+		}
 	}
-	return hongKongQuote{Code: code, LastPrice: price, ChangeRate: change, LotSize: lot, Currency: fields[75], Kind: fields[63], QuoteAt: at.Unix(), DepthAt: at.Unix(), Source: "tencent", Bid: bid, Ask: ask}, nil
+	return hongKongQuote{Code: code, LastPrice: price, ChangeRate: change, LotSize: metadata.LotSize, Currency: metadata.Currency, Kind: metadata.Kind,
+		QuoteAt: metadata.At, DepthAt: depthAt, MetadataAt: metadata.At, Source: "tencent", Bid: bid, Ask: ask}, nil
 }
 
 func validateHongKongQuote(quote hongKongQuote, now time.Time) string {
@@ -244,13 +327,18 @@ func HongKongTradeQuote(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "港股证券不存在")
 		return
 	}
-	quote, err := fetchHongKongTradeQuote(c.Request.Context(), security.Code)
+	quote, err := loadHongKongTradeQuote(c.Request.Context(), security)
 	if err != nil {
 		zap.L().Warn("读取港股模拟报价失败", zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "港股报价暂不可用，请重试")
 		return
 	}
-	quote.SyncWarning = stock.PriorityWarning(security.Symbol)
+	if warning := stock.PriorityWarning(security.Symbol); warning != "" {
+		if quote.SyncWarning != "" {
+			quote.SyncWarning += "；"
+		}
+		quote.SyncWarning += warning
+	}
 	settings, err := loadMobileTradeSettings()
 	if err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取港股交易配置失败")
@@ -314,7 +402,7 @@ func PlaceHongKongOrder(c *gin.Context) {
 		return
 	}
 	input.Code = security.Code
-	quote, err := fetchHongKongTradeQuote(c.Request.Context(), security.Code)
+	quote, err := loadHongKongTradeQuote(c.Request.Context(), security)
 	if err != nil {
 		zap.L().Warn("港股模拟成交报价失败", zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "报价不可用，请用原请求重试")

@@ -337,7 +337,8 @@ func priorityQuoteDelayed(item system.StockSecurity, now time.Time) bool {
 func fetchPriorityBatch(ctx context.Context, client *http.Client, tencentURL, eastmoneyURL string, items []system.StockSecurity, now time.Time) ([]system.StockSecurity, []string, []string) {
 	symbols, codes := make([]string, 0, len(items)), make([]string, 0, len(items))
 	for _, item := range items {
-		symbols, codes = append(symbols, item.Symbol), append(codes, positionquote.Symbol(item.Symbol))
+		symbols = append(symbols, item.Symbol)
+		codes = append(codes, positionquote.TencentCodes(item.Symbol)...)
 	}
 	var body []byte
 	var eastmoney map[string]hkquote.Quote

@@ -2,6 +2,7 @@ package positionquote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,16 +15,26 @@ import (
 )
 
 func FetchLatest(ctx context.Context, client *http.Client, tencentURL, eastmoneyURL string, symbols []string, now time.Time) (map[string]Quote, error) {
+	quotes, err := FetchAvailable(ctx, client, tencentURL, eastmoneyURL, symbols, now)
+	if err != nil {
+		return nil, err
+	}
+	return quotes, nil
+}
+
+func FetchAvailable(ctx context.Context, client *http.Client, tencentURL, eastmoneyURL string, symbols []string, now time.Time) (map[string]Quote, error) {
 	requestSymbols := make([]string, 0, len(symbols))
 	seen := make(map[string]bool)
+	var missing []error
 	for _, symbol := range symbols {
-		if Symbol(symbol) == "" {
-			return nil, fmt.Errorf("持仓证券代码无效：%s", symbol)
-		}
 		if seen[symbol] {
 			continue
 		}
 		seen[symbol] = true
+		if Symbol(symbol) == "" {
+			missing = append(missing, fmt.Errorf("持仓证券代码无效：%s", symbol))
+			continue
+		}
 		requestSymbols = append(requestSymbols, symbol)
 	}
 	quotes := make(map[string]Quote, len(requestSymbols))
@@ -32,8 +43,10 @@ func FetchLatest(ctx context.Context, client *http.Client, tencentURL, eastmoney
 		tencentCodes := make([]string, 0, len(batch))
 		requested := make(map[string]string)
 		for _, symbol := range batch {
-			tencentCodes = append(tencentCodes, Symbol(symbol))
-			requested[Symbol(symbol)] = symbol
+			for _, code := range TencentCodes(symbol) {
+				tencentCodes = append(tencentCodes, code)
+				requested[code] = symbol
+			}
 		}
 		var tencent map[string]Quote
 		var eastmoney map[string]hkquote.Quote
@@ -68,10 +81,11 @@ func FetchLatest(ctx context.Context, client *http.Client, tencentURL, eastmoney
 				best = Quote{Price: candidate.LastPrice, At: candidate.QuoteAt, Source: "eastmoney"}
 			}
 			if best.Price <= 0 || best.At <= 0 {
-				return nil, fmt.Errorf("%s 没有通过时效检查的持仓报价，请稍后刷新", symbol)
+				missing = append(missing, fmt.Errorf("%s 没有通过时效检查的持仓报价，请稍后刷新", symbol))
+				continue
 			}
 			quotes[symbol] = best
 		}
 	}
-	return quotes, nil
+	return quotes, errors.Join(missing...)
 }

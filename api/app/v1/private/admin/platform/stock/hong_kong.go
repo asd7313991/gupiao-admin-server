@@ -3,6 +3,7 @@ package stock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -64,13 +65,11 @@ func HongKongSyncStatus(c *gin.Context) {
 }
 
 func SyncHongKong(c *gin.Context) {
-	hkSync.Lock()
-	if hkSync.status.State == "running" {
-		hkSync.Unlock()
+	if !beginHongKongSync() {
 		response.ReturnError(c, response.FAILED_PRECONDITION, "港股采集正在执行，请勿重复提交")
 		return
 	}
-	hkSync.status = hongKongSyncStatus{State: "running", Stage: "正在获取新浪港股列表", StartedAt: time.Now().Unix()}
+	hkSync.Lock()
 	status := hkSync.status
 	hkSync.Unlock()
 
@@ -78,7 +77,24 @@ func SyncHongKong(c *gin.Context) {
 	response.ReturnData(c, status)
 }
 
-func runHongKongSync() {
+func beginHongKongSync() bool {
+	hkSync.Lock()
+	defer hkSync.Unlock()
+	if hkSync.status.State == "running" {
+		return false
+	}
+	hkSync.status = hongKongSyncStatus{State: "running", Stage: "正在获取新浪港股列表", StartedAt: time.Now().Unix()}
+	return true
+}
+
+func SyncHongKongData() error {
+	if !beginHongKongSync() {
+		return ErrHongKongSyncRunning
+	}
+	return runHongKongSync()
+}
+
+func runHongKongSync() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	progress := func(status hongKongSyncStatus) {
@@ -103,6 +119,7 @@ func runHongKongSync() {
 	}
 	hkSync.status = result
 	hkSync.Unlock()
+	return err
 }
 
 type sinaHongKongSecurity struct {
@@ -283,37 +300,82 @@ func sinaHongKongToSecurity(item sinaHongKongSecurity) (system.StockSecurity, er
 
 func parseHongKongTencentQuotes(body string) (map[string]system.StockSecurity, error) {
 	quotes := make(map[string]system.StockSecurity)
+	candidates := make(map[string]system.StockSecurity)
+	seen := make(map[string]bool)
+	var failures []error
 	if !strings.Contains(body, "v_") {
 		return nil, fmt.Errorf("腾讯港股行情响应格式无效")
 	}
 	for _, line := range strings.Split(body, ";") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "v_hk") {
+		if !strings.HasPrefix(line, "v_hk") && !strings.HasPrefix(line, "v_r_hk") {
 			continue
 		}
 		separator := strings.Index(line, "=")
 		if separator < 0 {
-			return nil, fmt.Errorf("腾讯港股行情缺少分隔符")
+			failures = append(failures, fmt.Errorf("腾讯港股行情缺少分隔符"))
+			continue
 		}
-		code := strings.TrimPrefix(line[:separator], "v_hk")
+		alias := line[:separator]
+		if seen[alias] {
+			delete(candidates, alias)
+			failures = append(failures, fmt.Errorf("腾讯港股候选重复：%s", alias))
+			continue
+		}
+		seen[alias] = true
+		code := strings.TrimPrefix(strings.TrimPrefix(line[:separator], "v_"), "r_")
+		code = strings.TrimPrefix(code, "hk")
 		fields := strings.Split(strings.Trim(line[separator+1:], `"`), "~")
 		if !hkCodePattern.MatchString(code) || len(fields) < 38 || fields[2] != code {
-			return nil, fmt.Errorf("腾讯港股行情字段不完整或代码不匹配：%s", code)
+			failures = append(failures, fmt.Errorf("腾讯港股行情字段不完整或代码不匹配：%s", code))
+			continue
 		}
 		price, err := hongKongNumber(fields[3], "价格")
 		if err != nil || price < 0 {
-			return nil, fmt.Errorf("腾讯港股价格无效：%s", code)
+			failures = append(failures, fmt.Errorf("腾讯港股价格无效：%s", code))
+			continue
 		}
 		if price == 0 {
 			continue
 		}
 		security, err := sinaHongKongToSecurity(sinaHongKongSecurity{Code: code, Price: fields[3], ChangeRate: fields[32], Volume: fields[6], Amount: fields[37], QuoteTime: fields[30]})
 		if err != nil {
-			return nil, fmt.Errorf("腾讯港股数据无效：%w", err)
+			failures = append(failures, fmt.Errorf("腾讯港股数据无效：%w", err))
+			continue
 		}
-		quotes[code] = security
+		if security.QuoteAt <= 0 || security.QuoteAt > time.Now().Unix()+60 {
+			failures = append(failures, fmt.Errorf("腾讯港股时间无效或超前：%s", code))
+			continue
+		}
+		if metadata, err := hkquote.ParseTencentMetadata(fields); err == nil {
+			security.HKLotSize, security.HKCurrency, security.HKKind, security.HKMetadataAt = metadata.LotSize, metadata.Currency, metadata.Kind, metadata.At
+		} else if len(fields) > 75 {
+			failures = append(failures, fmt.Errorf("%s 证券资料无效：%w", code, err))
+		}
+		candidates[alias] = security
 	}
-	return quotes, nil
+	for alias, security := range candidates {
+		if previous, ok := quotes[security.Code]; !ok || security.QuoteAt > previous.QuoteAt ||
+			security.QuoteAt == previous.QuoteAt && strings.HasPrefix(alias, "v_r_hk") {
+			quotes[security.Code] = security
+		}
+	}
+	return quotes, errors.Join(failures...)
+}
+
+func hongKongSnapshotUpdates(now time.Time) clause.Set {
+	updates := clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "updated_at"})
+	for _, column := range []string{"last_price", "change_rate", "volume", "amount", "quote_at", "source"} {
+		updates = append(updates, clause.Assignment{
+			Column: clause.Column{Name: column},
+			Value:  gorm.Expr("CASE WHEN EXCLUDED.last_price > 0 AND EXCLUDED.quote_at > 0 AND EXCLUDED.quote_at <= ? AND EXCLUDED.quote_at >= stock_securities.quote_at THEN EXCLUDED."+column+" ELSE stock_securities."+column+" END", now.Unix()+60),
+		})
+	}
+	for _, column := range []string{"hk_lot_size", "hk_currency", "hk_kind", "hk_metadata_at"} {
+		updates = append(updates, clause.Assignment{Column: clause.Column{Name: column},
+			Value: gorm.Expr("CASE WHEN EXCLUDED.hk_lot_size >= 1 AND EXCLUDED.hk_currency <> '' AND EXCLUDED.hk_kind <> '' AND EXCLUDED.hk_metadata_at > 0 AND EXCLUDED.hk_metadata_at <= ? AND EXCLUDED.hk_metadata_at >= stock_securities.hk_metadata_at THEN EXCLUDED."+column+" ELSE stock_securities."+column+" END", now.Unix()+60)})
+	}
+	return updates
 }
 
 func saveHongKongSecurities(ctx context.Context, db *gorm.DB, securities []system.StockSecurity) error {
@@ -321,17 +383,10 @@ func saveHongKongSecurities(ctx context.Context, db *gorm.DB, securities []syste
 		return fmt.Errorf("港股证券列表为空，已取消写入")
 	}
 	securities = orderedQuoteRows(securities)
-	updates := clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "updated_at"})
-	for _, column := range []string{"last_price", "change_rate", "volume", "amount", "quote_at", "source"} {
-		updates = append(updates, clause.Assignment{
-			Column: clause.Column{Name: column},
-			Value:  gorm.Expr("CASE WHEN EXCLUDED.last_price > 0 AND EXCLUDED.quote_at >= stock_securities.quote_at THEN EXCLUDED." + column + " ELSE stock_securities." + column + " END"),
-		})
-	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "code"}},
-			DoUpdates: updates,
+			DoUpdates: hongKongSnapshotUpdates(time.Now()),
 		}).CreateInBatches(&securities, 100).Error
 	})
 }

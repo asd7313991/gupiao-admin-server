@@ -21,7 +21,7 @@ func TestHongKongRefreshUpdatesWholeMarketWithoutCachedPrices(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/tencent" {
 			for _, symbol := range strings.Split(request.URL.Query().Get("q"), ",") {
-				code := strings.TrimPrefix(symbol, "hk")
+				code := strings.TrimPrefix(strings.TrimPrefix(symbol, "r_"), "hk")
 				price, rate := "2", "0.1"
 				if round.Load() == 1 && code == "00601" {
 					price, rate = "1000", "20"
@@ -31,6 +31,7 @@ func TestHongKongRefreshUpdatesWholeMarketWithoutCachedPrices(t *testing.T) {
 					quoteAt = at.Add(15 * time.Second)
 				}
 				body := hongKongQuoteFixture(code, price, quoteAt.In(hkLocation).Format("2006/01/02 15:04:05"))
+				body = strings.Replace(body, "v_hk"+code, "v_"+symbol, 1)
 				fmt.Fprint(w, strings.Replace(body, "-1.77", rate, 1))
 			}
 			return

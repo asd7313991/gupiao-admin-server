@@ -166,39 +166,11 @@ func collectHongKong(ctx context.Context, client *http.Client, listURL, quoteURL
 	progress(result)
 	for start := 0; start < len(securities); start += 100 {
 		end := min(start+100, len(securities))
-		symbols := make([]string, 0, end-start)
-		codes := make([]string, 0, end-start)
-		for _, security := range securities[start:end] {
-			symbols = append(symbols, "hk"+security.Code)
-			codes = append(codes, security.Code)
-		}
-		eastmoney, eastmoneyErr := hkquote.FetchEastmoney(ctx, client, eastmoneyURL, codes)
-		if eastmoneyErr != nil {
-			zap.L().Warn("东方财富港股报价失败，尝试备用来源", zap.Int("batch", start/100+1), zap.Error(eastmoneyErr))
-		}
-		body, err := fetchHongKongBody(ctx, client, quoteURL+"?q="+url.QueryEscape(strings.Join(symbols, ",")), "https://gu.qq.com/", true)
-		var quotes map[string]system.StockSecurity
-		if err == nil {
-			quotes, err = parseHongKongTencentQuotes(string(body))
-		}
-		if err != nil {
-			zap.L().Warn("腾讯港股报价失败，尝试其他来源", zap.Int("batch", start/100+1), zap.Error(err))
-		}
-		if ctx.Err() != nil {
-			return nil, result, ctx.Err()
+		if err := updateHongKongBatch(ctx, client, quoteURL, eastmoneyURL, securities[start:end]); err != nil {
+			return nil, result, err
 		}
 		for index := start; index < end; index++ {
 			security := &securities[index]
-			if quote, ok := quotes[security.Code]; ok && quote.QuoteAt <= time.Now().Unix()+60 && quote.QuoteAt >= security.QuoteAt {
-				security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate
-				security.Volume, security.Amount, security.QuoteAt = quote.Volume, quote.Amount, quote.QuoteAt
-				security.Source = "sina/tencent"
-			}
-			if quote, ok := eastmoney[security.Code]; ok && quote.QuoteAt >= security.QuoteAt {
-				security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate
-				security.Volume, security.Amount, security.QuoteAt = quote.Volume, quote.Amount, quote.QuoteAt
-				security.Source = "eastmoney"
-			}
 			switch security.Source {
 			case "eastmoney":
 				result.Eastmoney++

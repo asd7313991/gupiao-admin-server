@@ -80,6 +80,7 @@ func TestParseTencentQuotes(t *testing.T) {
 	fields := make([]string, 33)
 	fields[0], fields[1], fields[2] = "51", "拉卡拉", "300773"
 	fields[3], fields[4], fields[32] = "14.38", "14.38", "-2.38"
+	fields[30] = "20261023113000"
 	body := "\n v_sz300773=\"" + strings.Join(fields, "~") + `";`
 	quotes := parseTencentQuotes(body)
 	quote, exists := quotes["sz300773"]

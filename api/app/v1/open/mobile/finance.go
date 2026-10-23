@@ -54,6 +54,7 @@ type fundFlowView struct {
 }
 
 func FinanceSummary(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	item, ok := currentVerificationCustomer(c)
 	if !ok {
 		return

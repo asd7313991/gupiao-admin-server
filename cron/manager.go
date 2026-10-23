@@ -26,6 +26,7 @@ func InitCronJobs() {
 	// 初始化用户缓存定时任务
 	InitUserCacheJob()
 	InitStockSyncJob()
+	InitHongKongQuoteJob()
 	InitNewsCollectJob()
 	InitLimitOrderMatchJob()
 	InitManagementFeeJob()

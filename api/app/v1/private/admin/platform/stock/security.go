@@ -1,19 +1,16 @@
 package stock
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/transform"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -24,6 +21,7 @@ import (
 )
 
 type eastmoneyResponse struct {
+	RC   int `json:"rc"`
 	Data struct {
 		Total int `json:"total"`
 		Diff  []struct {
@@ -36,6 +34,7 @@ type eastmoneyResponse struct {
 			Volume     flexibleFloat `json:"f5"`
 			Amount     flexibleFloat `json:"f6"`
 			Turnover   flexibleFloat `json:"f8"`
+			QuoteAt    int64         `json:"f124"`
 		} `json:"diff"`
 	} `json:"data"`
 }
@@ -47,6 +46,11 @@ type eastmoneyDate string
 type tencentQuote struct {
 	Price      float64
 	ChangeRate float64
+	QuoteAt    int64
+	Volume     float64
+	Amount     float64
+	Turnover   float64
+	MarketData bool
 }
 
 func (value *eastmoneyDate) UnmarshalJSON(data []byte) error {
@@ -71,8 +75,8 @@ func (value *flexibleFloat) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	number, err := strconv.ParseFloat(text, 64)
-	if err != nil {
-		return nil
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return fmt.Errorf("行情数值无效：%q", text)
 	}
 	*value = flexibleFloat(number)
 	return nil
@@ -263,73 +267,38 @@ func SyncEastmoney(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "同步东方财富数据失败")
 		return
 	}
-	response.ReturnData(c, gin.H{"synced": synced, "limit": 10000, "source": "Eastmoney public quote API"})
+	response.ReturnData(c, gin.H{"synced": synced, "limit": 10000, "source": "Eastmoney/Tencent public quote API"})
 }
 
 // SyncEastmoneyData 将东方财富公开行情接口的数据批量同步至本地缓存。
 func SyncEastmoneyData(maxSyncRows int) (int, error) {
+	eastmoneySyncLock.Lock()
+	defer eastmoneySyncLock.Unlock()
 	client := &http.Client{Timeout: 12 * time.Second}
-	synced := 0
-	if maxSyncRows <= 0 || maxSyncRows > 10000 {
-		maxSyncRows = 10000
-	}
-	for page, totalPages := 1, 1; page <= totalPages; page++ {
-		q := url.Values{"pn": {fmt.Sprint(page)}, "pz": {"100"}, "po": {"1"}, "np": {"1"}, "ut": {"bd1d9ddb04089700cf9c27f6f7426281"}, "fltt": {"2"}, "invt": {"2"}, "fid": {"f3"}, "fs": {"m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"}, "fields": {"f12,f13,f14,f26,f2,f3,f5,f6,f8"}}
-		resp, err := client.Get("https://push2delay.eastmoney.com/api/qt/clist/get?" + q.Encode())
+	securities, err := fetchEastmoneySnapshot(client, maxSyncRows)
+	if err != nil {
+		zap.L().Warn("东方财富全市场采集失败，尝试腾讯备用行情", zap.Error(err))
+		var existing []system.StockSecurity
+		limit := maxSyncRows
+		if limit <= 0 || limit > 10000 {
+			limit = 10000
+		}
+		db := pgdb.GetClient().Where("market = ?", "A股").Order("code").Limit(limit)
+		if queryErr := db.Find(&existing).Error; queryErr != nil {
+			return 0, fmt.Errorf("东方财富采集失败：%w；读取备用证券列表失败：%v", err, queryErr)
+		}
+		securities, err = fetchTencentSnapshot(client, existing)
 		if err != nil {
-			return synced, err
+			return 0, fmt.Errorf("腾讯全市场备用行情失败：%w", err)
 		}
-		var payload eastmoneyResponse
-		err = json.NewDecoder(resp.Body).Decode(&payload)
-		resp.Body.Close()
-		if err != nil || len(payload.Data.Diff) == 0 {
-			if err != nil {
-				return synced, err
-			}
-			break
-		}
-		if payload.Data.Total > 0 {
-			totalPages = (payload.Data.Total + 99) / 100
-			if totalPages > maxSyncRows/100 {
-				totalPages = maxSyncRows / 100
-			}
-		}
-		securities := make([]system.StockSecurity, 0, len(payload.Data.Diff))
-		for _, item := range payload.Data.Diff {
-			market := "A股"
-			suffix := "SZ"
-			exchange := "深交所"
-			if item.Market == 1 {
-				suffix = "SH"
-				exchange = "上交所"
-			}
-			board := classifyBoard(item.Code, item.Market)
-			if board == "北交所" {
-				suffix = "BJ"
-				exchange = "北交所"
-			}
-			securities = append(securities, system.StockSecurity{Code: item.Code, Symbol: item.Code + "." + suffix, Market: market, Name: item.Name, Exchange: exchange, Board: board, ListDate: string(item.ListDate), LastPrice: float64(item.Price), ChangeRate: float64(item.ChangeRate), Volume: float64(item.Volume), Amount: float64(item.Amount), Turnover: float64(item.Turnover), Status: system.StatusEnabled, Source: "eastmoney"})
-		}
-		if err := fillTencentPrices(client, securities); err != nil {
-			return synced, err
-		}
-		validPrices := 0
-		for index := range securities {
-			if securities[index].LastPrice > 0 {
-				validPrices++
-				continue
-			}
-			securities[index].Source = "eastmoney/unavailable"
-		}
-		if validPrices == 0 {
-			return synced, fmt.Errorf("第 %d 页行情没有有效价格，已取消写入", page)
-		}
-		if err := pgdb.GetClient().Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date", "last_price", "change_rate", "volume", "amount", "turnover", "source", "updated_at"})}).Create(&securities).Error; err != nil {
-			return synced, err
-		}
-		synced += len(securities)
 	}
-	return synced, nil
+	err = pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date", "last_price", "change_rate", "volume", "amount", "turnover", "source", "quote_at", "updated_at"})}).CreateInBatches(&securities, 100).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(securities), nil
 }
 
 func fillTencentPrices(client *http.Client, securities []system.StockSecurity) error {
@@ -348,33 +317,21 @@ func fillTencentPrices(client *http.Client, securities []system.StockSecurity) e
 		if end > len(symbols) {
 			end = len(symbols)
 		}
-		request, err := http.NewRequest(http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(strings.Join(symbols[start:end], ",")), nil)
+		quotes, err := fetchTencentBatch(context.Background(), client, symbols[start:end])
 		if err != nil {
 			return err
 		}
-		request.Header.Set("User-Agent", "Mozilla/5.0")
-		request.Header.Set("Referer", "https://gu.qq.com/")
-		response, err := client.Do(request)
-		if err != nil {
-			return err
-		}
-		if response.StatusCode != http.StatusOK {
-			response.Body.Close()
-			return fmt.Errorf("腾讯行情响应状态异常：%d", response.StatusCode)
-		}
-		reader := transform.NewReader(response.Body, simplifiedchinese.GBK.NewDecoder())
-		body, readErr := io.ReadAll(reader)
-		response.Body.Close()
-		if readErr != nil {
-			return readErr
-		}
-		for symbol, quote := range parseTencentQuotes(string(body)) {
+		for symbol, quote := range quotes {
 			index, exists := indexBySymbol[symbol]
 			if !exists || quote.Price <= 0 {
 				continue
 			}
 			securities[index].LastPrice = quote.Price
 			securities[index].ChangeRate = quote.ChangeRate
+			securities[index].QuoteAt = quote.QuoteAt
+			if quote.MarketData {
+				securities[index].Volume, securities[index].Amount, securities[index].Turnover = quote.Volume, quote.Amount, quote.Turnover
+			}
 			securities[index].Source = "eastmoney/tencent"
 		}
 	}
@@ -406,11 +363,39 @@ func parseTencentQuotes(body string) map[string]tencentQuote {
 			continue
 		}
 		price, err := strconv.ParseFloat(fields[3], 64)
-		if err != nil || price <= 0 {
+		if err != nil || price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) || len(symbol) != 8 || fields[2] != symbol[2:] {
 			continue
 		}
-		changeRate, _ := strconv.ParseFloat(fields[32], 64)
-		quotes[symbol] = tencentQuote{Price: price, ChangeRate: changeRate}
+		changeRate, err := strconv.ParseFloat(fields[32], 64)
+		if err != nil || math.IsNaN(changeRate) || math.IsInf(changeRate, 0) {
+			continue
+		}
+		quoteTime, err := time.ParseInLocation("20060102150405", fields[30], time.FixedZone("Asia/Shanghai", 8*60*60))
+		if err != nil {
+			continue
+		}
+		quote := tencentQuote{Price: price, ChangeRate: changeRate, QuoteAt: quoteTime.Unix()}
+		if len(fields) >= 39 {
+			stats := make([]float64, 3)
+			valid := true
+			for index, field := range []int{6, 37, 38} {
+				text := fields[field]
+				if text == "-" || text == "" {
+					text = "0"
+				}
+				value, err := strconv.ParseFloat(text, 64)
+				if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+					valid = false
+					break
+				}
+				stats[index] = value
+			}
+			if !valid || math.IsInf(stats[1]*10000, 0) {
+				continue
+			}
+			quote.Volume, quote.Amount, quote.Turnover, quote.MarketData = stats[0], stats[1]*10000, stats[2], true
+		}
+		quotes[symbol] = quote
 	}
 	return quotes
 }

@@ -133,6 +133,7 @@ func toSecurityView(item system.StockSecurity) securityView {
 }
 
 func ListSecurities(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	page, pageSize := middleware.GetPage(c), middleware.GetPageSize(c)
 	if page < 1 {
 		page = 1
@@ -151,6 +152,9 @@ func ListSecurities(c *gin.Context) {
 		}
 	} else {
 		db = db.Where("status = ?", system.StatusEnabled).Where("COALESCE(symbol, '') NOT LIKE ?", "%.HK").Where("COALESCE(market, '') NOT IN ?", []string{"港股", "HK"})
+		if strings.TrimSpace(c.Query("keyword")) == "" {
+			db = db.Where("last_price > 0 AND COALESCE(source, '') NOT LIKE ?", "%/unavailable")
+		}
 	}
 	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
 		db = db.Where("code LIKE ? OR symbol LIKE ? OR name LIKE ?", "%"+keyword+"%", "%"+keyword+"%", "%"+keyword+"%")
@@ -187,6 +191,7 @@ func ListSecurities(c *gin.Context) {
 }
 
 func SecurityDetail(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var item system.StockSecurity
 	code := strings.TrimSpace(c.Param("code"))
 	err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&item).Error

@@ -13,6 +13,7 @@ import (
 )
 
 func ListWatchlist(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	customerID := middleware.GetCurrentCustomerID(c)
 	var items []system.StockSecurity
 	err := pgdb.GetClient().Model(&system.StockSecurity{}).

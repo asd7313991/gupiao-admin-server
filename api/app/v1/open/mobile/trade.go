@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -16,6 +18,8 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/hkquote"
+	"api-server/util/positionquote"
 )
 
 type mobileTradeSettings struct {
@@ -96,6 +100,8 @@ type orderResult struct {
 }
 
 type tradePositionView struct {
+	QuoteSource  string  `json:"quote_source"`
+	QuoteAt      int64   `json:"quote_at"`
 	Currency     string  `json:"currency"`
 	ID           uint    `json:"id"`
 	Symbol       string  `json:"symbol"`
@@ -130,6 +136,7 @@ func MobileTradeSettings(c *gin.Context) {
 }
 
 func ListCustomerPositions(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	customerID := middleware.GetCurrentCustomerID(c)
 	var items []system.TradePosition
 	db := tradeMarketScope(pgdb.GetClient(), c.Query("market"))
@@ -138,21 +145,30 @@ func ListCustomerPositions(c *gin.Context) {
 		return
 	}
 	views := make([]tradePositionView, 0, len(items))
+	symbols := make([]string, 0, len(items))
 	for _, item := range items {
-		var security system.StockSecurity
-		price := item.CurrentPrice
-		if pgdb.GetClient().Where("symbol = ?", item.Symbol).First(&security).Error == nil && security.LastPrice > 0 {
-			price = security.LastPrice
-		}
-		leverage := positionLeverage(item)
-		marketValue, profitLoss, profitRate := calculatePositionValues(item.PositionQty, price, item.TotalCost, leverage)
-		margin := item.Margin
-		if margin <= 0 && item.TotalCost > 0 {
-			margin = roundMoney(item.TotalCost)
-		}
-		views = append(views, tradePositionView{Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate})
+		symbols = append(symbols, item.Symbol)
+	}
+	quotes, err := positionquote.FetchLatest(c.Request.Context(), &http.Client{Timeout: 8 * time.Second}, "https://qt.gtimg.cn/q=", hkquote.EastmoneyURL, symbols, time.Now())
+	if err != nil {
+		zap.L().Warn("持仓估值行情不可用", zap.Uint("customer_id", customerID), zap.Error(err))
+		response.ReturnError(c, response.UNAVAILABLE, "持仓估值暂不可用："+err.Error())
+		return
+	}
+	for _, item := range items {
+		views = append(views, valueCustomerPosition(item, quotes[item.Symbol]))
 	}
 	response.ReturnData(c, views)
+}
+
+func valueCustomerPosition(item system.TradePosition, quote positionquote.Quote) tradePositionView {
+	leverage := positionLeverage(item)
+	marketValue, profitLoss, profitRate := calculatePositionValues(item.PositionQty, quote.Price, item.TotalCost, leverage)
+	margin := item.Margin
+	if margin <= 0 && item.TotalCost > 0 {
+		margin = roundMoney(item.TotalCost)
+	}
+	return tradePositionView{QuoteSource: quote.Source, QuoteAt: quote.At, Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: quote.Price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate}
 }
 
 func ListCustomerTradeRecords(c *gin.Context) {

@@ -25,6 +25,7 @@ import (
 	"api-server/config"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/hkquote"
 )
 
 type hongKongQuote struct {
@@ -35,6 +36,7 @@ type hongKongQuote struct {
 	Currency   string           `json:"currency"`
 	Kind       string           `json:"kind"`
 	QuoteAt    int64            `json:"quote_at"`
+	DepthAt    int64            `json:"depth_at"`
 	Source     string           `json:"source"`
 	Bid        []orderBookLevel `json:"bid"`
 	Ask        []orderBookLevel `json:"ask"`
@@ -48,6 +50,10 @@ func tradeMarketScope(db *gorm.DB, market string) *gorm.DB {
 }
 
 func fetchHongKongTradeQuote(ctx context.Context, code string) (hongKongQuote, error) {
+	return fetchHongKongTradeQuoteWithSources(ctx, &http.Client{Timeout: 8 * time.Second}, code, "https://qt.gtimg.cn/q=hk", hkquote.EastmoneyURL)
+}
+
+func fetchHongKongTradeQuoteWithSources(ctx context.Context, client *http.Client, code, tencentURL, eastmoneyURL string) (hongKongQuote, error) {
 	if len(code) != 5 {
 		return hongKongQuote{}, fmt.Errorf("港股代码必须为五位数字")
 	}
@@ -56,13 +62,36 @@ func fetchHongKongTradeQuote(ctx context.Context, code string) (hongKongQuote, e
 			return hongKongQuote{}, fmt.Errorf("港股代码无效")
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qt.gtimg.cn/q=hk"+code, nil)
+	// 腾讯提供每手、币种、品种和盘口，东方财富仅替换时间较新的有效价格，不推测交易元数据。
+	quote, err := fetchTencentHongKongTradeQuote(ctx, client, code, tencentURL)
+	if err != nil {
+		return hongKongQuote{}, fmt.Errorf("读取港股交易元数据失败：%w", err)
+	}
+	quotes, err := hkquote.FetchEastmoney(ctx, client, eastmoneyURL, []string{code})
+	if ctx.Err() != nil {
+		return hongKongQuote{}, ctx.Err()
+	}
+	if err != nil {
+		zap.L().Warn("东方财富港股报价失败，保留腾讯报价及原始时间", zap.String("code", code), zap.Error(err))
+	} else if primary, ok := quotes[code]; ok && (primary.QuoteAt >= quote.QuoteAt || quote.LastPrice == 0 || quote.QuoteAt > time.Now().Unix()+60) {
+		quote.LastPrice, quote.ChangeRate, quote.QuoteAt, quote.Source = primary.LastPrice, primary.ChangeRate, primary.QuoteAt, "eastmoney"
+	} else if !ok {
+		zap.L().Warn("东方财富港股无有效报价，保留腾讯报价及原始时间", zap.String("code", code))
+	}
+	if quote.LastPrice <= 0 {
+		return hongKongQuote{}, fmt.Errorf("东方财富与腾讯均未返回有效港股价格")
+	}
+	return quote, nil
+}
+
+func fetchTencentHongKongTradeQuote(ctx context.Context, client *http.Client, code, endpoint string) (hongKongQuote, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+code, nil)
 	if err != nil {
 		return hongKongQuote{}, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 	req.Header.Set("Referer", "https://gu.qq.com/")
-	res, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return hongKongQuote{}, err
 	}
@@ -87,7 +116,7 @@ func parseHongKongTradeQuote(body, code string) (hongKongQuote, error) {
 		return hongKongQuote{}, fmt.Errorf("港股报价字段不完整或代码不匹配")
 	}
 	price, err := strconv.ParseFloat(fields[3], 64)
-	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price <= 0 || price > 1_000_000 {
+	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 || price > 1_000_000 {
 		return hongKongQuote{}, fmt.Errorf("港股报价无效")
 	}
 	lot, err := strconv.ParseFloat(fields[60], 64)
@@ -107,7 +136,7 @@ func parseHongKongTradeQuote(body, code string) (hongKongQuote, error) {
 		bid[index] = parseHongKongDepthLevel(fields[9+index*2], fields[10+index*2])
 		ask[index] = parseHongKongDepthLevel(fields[19+index*2], fields[20+index*2])
 	}
-	return hongKongQuote{Code: code, LastPrice: price, ChangeRate: change, LotSize: lot, Currency: fields[75], Kind: fields[63], QuoteAt: at.Unix(), Source: "tencent", Bid: bid, Ask: ask}, nil
+	return hongKongQuote{Code: code, LastPrice: price, ChangeRate: change, LotSize: lot, Currency: fields[75], Kind: fields[63], QuoteAt: at.Unix(), DepthAt: at.Unix(), Source: "tencent", Bid: bid, Ask: ask}, nil
 }
 
 func validateHongKongQuote(quote hongKongQuote, now time.Time) string {
@@ -126,7 +155,7 @@ func validateHongKongQuoteWithCloseTest(quote hongKongQuote, now time.Time, clos
 		return "港股报价时间无效或超前，请核对数据源及服务器时间"
 	}
 	if now.Unix()-quote.QuoteAt > 30*60 && !closeTest {
-		return "港股报价超过30分钟；收市后刷新不会更新上游报价，请等待有效行情或使用本机收市价测试模式"
+		return "港股报价超过30分钟；请刷新报价。全天模拟仅允许在盘外使用最近工作日的收市阶段报价，盘中仍需有效新报价"
 	}
 	return ""
 }
@@ -162,6 +191,30 @@ func hongKongClosePriceTest(quote hongKongQuote, now time.Time, settings mobileT
 		current.Hour()*60+current.Minute() >= 16*60+10 &&
 		current.Format("2006-01-02") == at.Format("2006-01-02") &&
 		at.Hour() >= 16 && quote.QuoteAt <= now.Unix()
+}
+
+func hongKongClosePriceSimulation(quote hongKongQuote, now time.Time, settings mobileTradeSettings) bool {
+	if !settings.Trade.AllDay || now.Unix()-quote.QuoteAt <= 30*60 {
+		return false
+	}
+	location := time.FixedZone("HK", 8*3600)
+	current, at := now.In(location), time.Unix(quote.QuoteAt, 0).In(location)
+	minute := current.Hour()*60 + current.Minute()
+	weekday := current.Weekday() != time.Saturday && current.Weekday() != time.Sunday
+	// 午休及交易时段不回放旧收市价；16:10后才能使用当天收市阶段报价。
+	if weekday && minute >= 9*60+30 && minute < 16*60+10 {
+		return false
+	}
+	closeDate := current
+	if !weekday || minute < 16*60+10 {
+		closeDate = closeDate.AddDate(0, 0, -1)
+		for closeDate.Weekday() == time.Saturday || closeDate.Weekday() == time.Sunday {
+			closeDate = closeDate.AddDate(0, 0, -1)
+		}
+	}
+	atMinute := at.Hour()*60 + at.Minute()
+	return at.Format("2006-01-02") == closeDate.Format("2006-01-02") &&
+		atMinute >= 16*60 && atMinute < 16*60+30 && quote.QuoteAt <= now.Unix()
 }
 
 func validateHongKongSettings(settings mobileTradeSettings) string {
@@ -206,18 +259,19 @@ func HongKongTradeQuote(c *gin.Context) {
 	}
 	now := time.Now()
 	closeTest := hongKongClosePriceTest(quote, now, settings, localHongKongTestRequest(c))
+	closeSimulation := hongKongClosePriceSimulation(quote, now, settings)
 	reason := validateHongKongSettings(settings)
 	if reason == "" && security.Status != system.StatusEnabled {
 		reason = "该港股尚未在后台启用交易"
 	}
 	if reason == "" {
-		reason = validateHongKongQuoteWithCloseTest(quote, now, closeTest)
+		reason = validateHongKongQuoteWithCloseTest(quote, now, closeTest || closeSimulation)
 	}
 	if reason == "" && !closeTest && !hongKongTradeTime(now, settings) {
 		reason = "当前不在港股模拟交易时段（09:30–12:00、13:00–16:00）"
 	}
 	limitReason := validateHongKongLimitMetadata(quote, security, settings, now)
-	response.ReturnData(c, gin.H{"quote": quote, "tradable": reason == "", "reason": reason, "balance": customer.HKDBalance, "fees": settings.HKTrade, "local_close_test": closeTest, "limit_order_allowed": limitReason == "", "limit_order_reason": limitReason})
+	response.ReturnData(c, gin.H{"quote": quote, "tradable": reason == "", "reason": reason, "balance": customer.HKDBalance, "fees": settings.HKTrade, "local_close_test": closeTest, "close_price_simulation": closeSimulation, "limit_order_allowed": limitReason == "", "limit_order_reason": limitReason})
 }
 
 type hongKongOrderInput struct {
@@ -328,8 +382,9 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 	if message := validateHongKongSettings(settings); message != "" {
 		return result, exchangeRejection(message)
 	}
-	closeTest := hongKongClosePriceTest(quote, now, settings, localRequest)
-	if message := validateHongKongQuoteWithCloseTest(quote, now, closeTest); message != "" {
+	closeTest := input.LimitOrderID == 0 && hongKongClosePriceTest(quote, now, settings, localRequest)
+	closeSimulation := input.LimitOrderID == 0 && hongKongClosePriceSimulation(quote, now, settings)
+	if message := validateHongKongQuoteWithCloseTest(quote, now, closeTest || closeSimulation); message != "" {
 		return result, exchangeRejection(message)
 	}
 	if !closeTest && !hongKongTradeTime(now, settings) {
@@ -402,15 +457,18 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		return result, err
 	}
 	if err := tx.Model(&system.StockSecurity{}).Where("id = ? AND quote_at <= ?", security.ID, quote.QuoteAt).
-		Updates(map[string]any{"last_price": quote.LastPrice, "change_rate": quote.ChangeRate, "quote_at": quote.QuoteAt, "source": "sina/tencent"}).Error; err != nil {
+		Updates(map[string]any{"last_price": quote.LastPrice, "change_rate": quote.ChangeRate, "quote_at": quote.QuoteAt, "source": quote.Source}).Error; err != nil {
 		return result, err
 	}
-	record := system.TradeRecord{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", Direction: input.Direction, TradePrice: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, Remark: fmt.Sprintf("港股市价模拟成交；来源腾讯；报价时间 %s（可能延迟）", time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05")), TradeAt: now.Unix()}
+	record := system.TradeRecord{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", Direction: input.Direction, TradePrice: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, Remark: fmt.Sprintf("港股市价模拟成交；来源 %s；报价时间 %s（可能延迟）", quote.Source, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05")), TradeAt: now.Unix()}
 	if input.LimitOrderID > 0 {
 		record.Remark = fmt.Sprintf("港股限价委托 %d 按有效买卖盘口模拟成交（非实盘，不模拟排队或部分成交）；来源腾讯；盘口时间 %s", input.LimitOrderID, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05"))
 	}
 	if closeTest {
 		record.Remark = "本机收市价模拟测试（非实时成交）；" + record.Remark
+	}
+	if closeSimulation {
+		record.Remark = "全天收市价模拟成交（非实时、非官方收市价）；" + record.Remark
 	}
 	if err := tx.Create(&record).Error; err != nil {
 		return result, err
@@ -423,13 +481,13 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 	if input.LimitOrderID > 0 {
 		flow.Remark = record.Remark + "；" + flow.Remark
 	}
-	if closeTest {
+	if closeTest || closeSimulation {
 		flow.Remark = record.Remark + "；" + flow.Remark
 	}
 	if err := tx.Create(&flow).Error; err != nil {
 		return result, err
 	}
-	result = orderResult{LocalCloseTest: closeTest, Currency: "HKD", QuoteAt: quote.QuoteAt, RecordID: record.ID, PositionID: position.ID, Direction: input.Direction, Price: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, TotalFee: roundMoney(totalFee), BalanceAfter: customer.HKDBalance, ExecutedAt: now.Unix()}
+	result = orderResult{LocalCloseTest: closeTest, ClosePriceSimulation: closeSimulation, Currency: "HKD", QuoteAt: quote.QuoteAt, RecordID: record.ID, PositionID: position.ID, Direction: input.Direction, Price: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, TotalFee: roundMoney(totalFee), BalanceAfter: customer.HKDBalance, ExecutedAt: now.Unix()}
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return result, err

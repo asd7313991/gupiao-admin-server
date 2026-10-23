@@ -24,6 +24,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/hkquote"
 )
 
 const (
@@ -42,6 +43,7 @@ type hongKongSyncStatus struct {
 	Quoted      int    `json:"quoted"`
 	Synced      int    `json:"synced"`
 	Tencent     int    `json:"tencent"`
+	Eastmoney   int    `json:"eastmoney"`
 	Sina        int    `json:"sina"`
 	Unavailable int    `json:"unavailable"`
 	Error       string `json:"error"`
@@ -86,7 +88,7 @@ func runHongKongSync() {
 		hkSync.Unlock()
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
-	securities, result, err := collectHongKong(ctx, client, hkListURL, hkQuoteURL, progress)
+	securities, result, err := collectHongKong(ctx, client, hkListURL, hkQuoteURL, hkquote.EastmoneyURL, progress)
 	if err == nil {
 		err = saveHongKongSecurities(ctx, pgdb.GetClient(), securities)
 	}
@@ -97,7 +99,7 @@ func runHongKongSync() {
 		zap.L().Error("港股采集失败", zap.Error(err))
 	} else {
 		result.State, result.Stage, result.Synced = "success", "港股采集完成", len(securities)
-		zap.L().Info("港股采集完成", zap.Int("synced", result.Synced), zap.Int("tencent", result.Tencent), zap.Int("sina", result.Sina), zap.Int("unavailable", result.Unavailable))
+		zap.L().Info("港股采集完成", zap.Int("synced", result.Synced), zap.Int("eastmoney", result.Eastmoney), zap.Int("tencent", result.Tencent), zap.Int("sina", result.Sina), zap.Int("unavailable", result.Unavailable))
 	}
 	hkSync.status = result
 	hkSync.Unlock()
@@ -113,7 +115,7 @@ type sinaHongKongSecurity struct {
 	QuoteTime  string `json:"ticktime"`
 }
 
-func collectHongKong(ctx context.Context, client *http.Client, listURL, quoteURL string, progress func(hongKongSyncStatus)) ([]system.StockSecurity, hongKongSyncStatus, error) {
+func collectHongKong(ctx context.Context, client *http.Client, listURL, quoteURL, eastmoneyURL string, progress func(hongKongSyncStatus)) ([]system.StockSecurity, hongKongSyncStatus, error) {
 	result := hongKongSyncStatus{Stage: "正在获取新浪港股列表"}
 	securities := make([]system.StockSecurity, 0, 3000)
 	seen := make(map[string]bool)
@@ -160,30 +162,46 @@ func collectHongKong(ctx context.Context, client *http.Client, listURL, quoteURL
 		return nil, result, fmt.Errorf("新浪港股列表为空或超过采集安全上限，已取消写入")
 	}
 
-	result.Stage = "正在获取腾讯港股报价"
+	result.Stage = "正在核对东方财富及腾讯港股报价"
 	progress(result)
 	for start := 0; start < len(securities); start += 100 {
 		end := min(start+100, len(securities))
 		symbols := make([]string, 0, end-start)
+		codes := make([]string, 0, end-start)
 		for _, security := range securities[start:end] {
 			symbols = append(symbols, "hk"+security.Code)
+			codes = append(codes, security.Code)
+		}
+		eastmoney, eastmoneyErr := hkquote.FetchEastmoney(ctx, client, eastmoneyURL, codes)
+		if eastmoneyErr != nil {
+			zap.L().Warn("东方财富港股报价失败，尝试备用来源", zap.Int("batch", start/100+1), zap.Error(eastmoneyErr))
 		}
 		body, err := fetchHongKongBody(ctx, client, quoteURL+"?q="+url.QueryEscape(strings.Join(symbols, ",")), "https://gu.qq.com/", true)
-		if err != nil {
-			return nil, result, fmt.Errorf("腾讯第 %d 批港股报价失败：%w", start/100+1, err)
+		var quotes map[string]system.StockSecurity
+		if err == nil {
+			quotes, err = parseHongKongTencentQuotes(string(body))
 		}
-		quotes, err := parseHongKongTencentQuotes(string(body))
 		if err != nil {
-			return nil, result, err
+			zap.L().Warn("腾讯港股报价失败，尝试其他来源", zap.Int("batch", start/100+1), zap.Error(err))
+		}
+		if ctx.Err() != nil {
+			return nil, result, ctx.Err()
 		}
 		for index := start; index < end; index++ {
 			security := &securities[index]
-			if quote, ok := quotes[security.Code]; ok && quote.QuoteAt >= security.QuoteAt {
+			if quote, ok := quotes[security.Code]; ok && quote.QuoteAt <= time.Now().Unix()+60 && quote.QuoteAt >= security.QuoteAt {
 				security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate
 				security.Volume, security.Amount, security.QuoteAt = quote.Volume, quote.Amount, quote.QuoteAt
 				security.Source = "sina/tencent"
 			}
+			if quote, ok := eastmoney[security.Code]; ok && quote.QuoteAt >= security.QuoteAt {
+				security.LastPrice, security.ChangeRate = quote.LastPrice, quote.ChangeRate
+				security.Volume, security.Amount, security.QuoteAt = quote.Volume, quote.Amount, quote.QuoteAt
+				security.Source = "eastmoney"
+			}
 			switch security.Source {
+			case "eastmoney":
+				result.Eastmoney++
 			case "sina/tencent":
 				result.Tencent++
 			case "sina":
@@ -198,7 +216,7 @@ func collectHongKong(ctx context.Context, client *http.Client, listURL, quoteURL
 			return nil, result, err
 		}
 	}
-	if result.Tencent+result.Sina == 0 {
+	if result.Eastmoney+result.Tencent+result.Sina == 0 {
 		return nil, result, fmt.Errorf("所有港股均无有效报价，已取消写入")
 	}
 	result.Stage = "正在保存港股数据"
@@ -330,13 +348,17 @@ func saveHongKongSecurities(ctx context.Context, db *gorm.DB, securities []syste
 	if len(securities) == 0 {
 		return fmt.Errorf("港股证券列表为空，已取消写入")
 	}
+	updates := clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "updated_at"})
+	for _, column := range []string{"last_price", "change_rate", "volume", "amount", "quote_at", "source"} {
+		updates = append(updates, clause.Assignment{
+			Column: clause.Column{Name: column},
+			Value:  gorm.Expr("CASE WHEN EXCLUDED.last_price > 0 AND EXCLUDED.quote_at >= stock_securities.quote_at THEN EXCLUDED." + column + " ELSE stock_securities." + column + " END"),
+		})
+	}
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "code"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"symbol", "market", "name", "exchange", "last_price", "change_rate",
-				"volume", "amount", "quote_at", "source", "updated_at",
-			}),
+			Columns:   []clause.Column{{Name: "code"}},
+			DoUpdates: updates,
 		}).CreateInBatches(&securities, 100).Error
 	})
 }

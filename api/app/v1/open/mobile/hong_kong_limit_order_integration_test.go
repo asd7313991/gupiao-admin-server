@@ -110,6 +110,12 @@ func TestHongKongLimitOrderIntegration(t *testing.T) {
 	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, order.ID, stale, now); err != nil || filled {
 		t.Fatal("旧盘口应继续等待", filled, err)
 	}
+	separateTime := stale
+	separateTime.Source, separateTime.DepthAt, separateTime.QuoteAt = "eastmoney", stale.QuoteAt, now.Unix()
+	if filled, err := matchHongKongLimitOrderDB(db, customer.ID, order.ID, separateTime, now); err != nil || filled {
+		t.Fatal("东方财富新价格不能刷新腾讯旧盘口的时间", filled, err)
+	}
+	assertAccount(roundMoney(100000-reserved), reserved)
 	errs = make(chan error, 6)
 	for i := 0; i < 6; i++ {
 		wg.Add(1)

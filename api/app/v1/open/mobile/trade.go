@@ -76,22 +76,23 @@ type orderInput struct {
 }
 
 type orderResult struct {
-	LocalCloseTest bool    `json:"local_close_test"`
-	Currency       string  `json:"currency"`
-	QuoteAt        int64   `json:"quote_at"`
-	RecordID       uint    `json:"record_id"`
-	PositionID     uint    `json:"position_id"`
-	Direction      string  `json:"direction"`
-	Price          float64 `json:"price"`
-	Quantity       float64 `json:"quantity"`
-	Amount         float64 `json:"amount"`
-	Commission     float64 `json:"commission"`
-	StampDuty      float64 `json:"stamp_duty"`
-	TransferFee    float64 `json:"transfer_fee"`
-	ManagementFee  float64 `json:"management_fee"`
-	TotalFee       float64 `json:"total_fee"`
-	BalanceAfter   float64 `json:"balance_after"`
-	ExecutedAt     int64   `json:"executed_at"`
+	ClosePriceSimulation bool    `json:"close_price_simulation"`
+	LocalCloseTest       bool    `json:"local_close_test"`
+	Currency             string  `json:"currency"`
+	QuoteAt              int64   `json:"quote_at"`
+	RecordID             uint    `json:"record_id"`
+	PositionID           uint    `json:"position_id"`
+	Direction            string  `json:"direction"`
+	Price                float64 `json:"price"`
+	Quantity             float64 `json:"quantity"`
+	Amount               float64 `json:"amount"`
+	Commission           float64 `json:"commission"`
+	StampDuty            float64 `json:"stamp_duty"`
+	TransferFee          float64 `json:"transfer_fee"`
+	ManagementFee        float64 `json:"management_fee"`
+	TotalFee             float64 `json:"total_fee"`
+	BalanceAfter         float64 `json:"balance_after"`
+	ExecutedAt           int64   `json:"executed_at"`
 }
 
 type tradePositionView struct {

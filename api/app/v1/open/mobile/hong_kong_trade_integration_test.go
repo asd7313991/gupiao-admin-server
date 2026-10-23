@@ -262,4 +262,45 @@ func TestHongKongTradeIntegration(t *testing.T) {
 		t.Fatal("次日不得继续使用昨日收市价")
 	}
 	assertState(64834.56, 2000, 3)
+	now = time.Date(2026, 10, 23, 8, 30, 0, 0, now.Location())
+	if err := db.Model(&setting).Update("config", `{"trade":{"allDay":true},"hkTrade":{"enabled":true,"commission":0.00025,"minCommission":15,"stampDuty":0.001,"regulatoryFee":0.000027,"tradingFee":0.0000565,"settlementFee":0.000042}}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	closeBuy.RequestID = "hk-all-day-close-buy"
+	closeResult, err = run(closeBuy, closeQuote)
+	if err != nil || !closeResult.ClosePriceSimulation || closeResult.LocalCloseTest || closeResult.QuoteAt != closeQuote.QuoteAt {
+		t.Fatalf("全天收市价回执错误：%+v %v", closeResult, err)
+	}
+	assertState(29279.60, 3000, 4)
+	var simulationRecord system.TradeRecord
+	var simulationFlow system.CustomerFundRecord
+	if err := db.First(&simulationRecord, closeResult.RecordID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Order("id DESC").First(&simulationFlow).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, remark := range []string{simulationRecord.Remark, simulationFlow.Remark} {
+		if !strings.Contains(remark, "全天收市价模拟成交") || !strings.Contains(remark, "2026-10-22 16:08:42") {
+			t.Fatalf("收市价成交及流水须保留模式与原始报价时间：%s", remark)
+		}
+	}
+	closeSell := closeBuy
+	closeSell.RequestID, closeSell.Direction = "hk-all-day-close-sell", "卖出"
+	if result, err := run(closeSell, closeQuote); err != nil || !result.ClosePriceSimulation {
+		t.Fatalf("全天收市价卖出失败：%+v %v", result, err)
+	}
+	assertState(64724.64, 2000, 5)
+	if err := db.Model(&setting).Update("config", `{"hkTrade":{"enabled":true}}`).Error; err != nil {
+		t.Fatal(err)
+	}
+	replayed, err = run(closeBuy, closeQuote)
+	if err != nil || replayed.RecordID != closeResult.RecordID || !replayed.ClosePriceSimulation {
+		t.Fatalf("关闭开关后仍应重放原回执：%+v %v", replayed, err)
+	}
+	closeBuy.RequestID = "hk-all-day-disabled"
+	if _, err := run(closeBuy, closeQuote); err == nil {
+		t.Fatal("关闭全天模式后不得新增收市价成交")
+	}
+	assertState(64724.64, 2000, 5)
 }

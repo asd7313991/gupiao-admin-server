@@ -257,6 +257,7 @@ func cancelHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, now time.Time)
 }
 
 func hongKongLimitMatchPrice(order system.LimitOrder, quote hongKongQuote, now time.Time, settings mobileTradeSettings) (float64, bool) {
+	quote = hongKongDepthQuote(quote)
 	if !hongKongTradeTime(now, settings) || validateHongKongQuote(quote, now) != "" || order.Symbol != quote.Code+".HK" {
 		return 0, false
 	}
@@ -283,6 +284,15 @@ func hongKongLimitMatchPrice(order system.LimitOrder, quote hongKongQuote, now t
 	return 0, false
 }
 
+func hongKongDepthQuote(quote hongKongQuote) hongKongQuote {
+	if quote.DepthAt > 0 {
+		quote.QuoteAt, quote.Source = quote.DepthAt, "tencent"
+	} else if quote.Source == "eastmoney" {
+		quote.QuoteAt = 0
+	}
+	return quote
+}
+
 func validHongKongDepthLevel(level orderBookLevel) bool {
 	return !math.IsNaN(level.Price) && !math.IsInf(level.Price, 0) && level.Price > 0 && level.Price <= 1_000_000 &&
 		math.Abs(level.Price*1000-math.Round(level.Price*1000)) < 0.000001 &&
@@ -290,6 +300,7 @@ func validHongKongDepthLevel(level orderBookLevel) bool {
 }
 
 func matchHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, quote hongKongQuote, now time.Time) (bool, error) {
+	quote = hongKongDepthQuote(quote)
 	filled := false
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var customer system.Customer

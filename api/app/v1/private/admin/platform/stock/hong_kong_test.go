@@ -103,6 +103,8 @@ func TestCollectHongKongUntilEmptyPage(t *testing.T) {
 			}
 			fmt.Fprint(w, hongKongQuoteFixture("00005", "145.5", "2026/10/20 14:00:01")+"\n"+
 				hongKongQuoteFixture("00700", "409", "2026/10/20 13:59:59"))
+		case "/eastmoney":
+			fmt.Fprint(w, `{"rc":0,"data":{"diff":[]}}`)
 		default:
 			t.Errorf("不应请求总数接口：%s", r.URL)
 			http.NotFound(w, r)
@@ -110,7 +112,7 @@ func TestCollectHongKongUntilEmptyPage(t *testing.T) {
 	}))
 	defer server.Close()
 	var progress []hongKongSyncStatus
-	rows, result, err := collectHongKong(context.Background(), server.Client(), server.URL+"/list", server.URL+"/quotes", func(status hongKongSyncStatus) {
+	rows, result, err := collectHongKong(context.Background(), server.Client(), server.URL+"/list", server.URL+"/quotes", server.URL+"/eastmoney", func(status hongKongSyncStatus) {
 		progress = append(progress, status)
 	})
 	if err != nil {
@@ -148,9 +150,61 @@ func TestCollectHongKongRejectsInvalidResponses(t *testing.T) {
 				fmt.Fprint(w, test.body)
 			}))
 			defer server.Close()
-			rows, _, err := collectHongKong(context.Background(), server.Client(), server.URL, server.URL, func(hongKongSyncStatus) {})
+			rows, _, err := collectHongKong(context.Background(), server.Client(), server.URL, server.URL, server.URL, func(hongKongSyncStatus) {})
 			if err == nil || len(rows) != 0 {
 				t.Fatalf("无效采集返回成功或部分数据：rows=%d，err=%v", len(rows), err)
+			}
+		})
+	}
+}
+
+func TestCollectHongKongQuoteSources(t *testing.T) {
+	at := time.Date(2026, 10, 22, 16, 8, 39, 0, hkLocation)
+	for _, tc := range []struct {
+		name       string
+		primaryAge time.Duration
+		primaryBad bool
+		tencentBad bool
+		wantSource string
+		wantPrice  float64
+	}{
+		{"东方财富较新", -time.Minute, false, false, "eastmoney", 3.155},
+		{"相同时间优先东方财富", 0, false, false, "eastmoney", 3.155},
+		{"腾讯较新", time.Minute, false, false, "sina/tencent", 3.15},
+		{"东方财富失败使用腾讯", 0, true, false, "sina/tencent", 3.15},
+		{"腾讯失败使用东方财富", 0, false, true, "eastmoney", 3.155},
+		{"两个报价源失败保留新浪", 0, true, true, "sina", 3.1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/list":
+					if r.URL.Query().Get("page") == "1" {
+						fmt.Fprintf(w, `[{"symbol":"09889","name":"测试港股","lasttrade":"3.1","ticktime":"%s"}]`, at.Add(-2*time.Minute).Format("2006/01/02 15:04:05"))
+					} else {
+						fmt.Fprint(w, `[]`)
+					}
+				case "/tencent":
+					if tc.tencentBad {
+						w.WriteHeader(http.StatusBadGateway)
+					} else {
+						fmt.Fprint(w, hongKongQuoteFixture("09889", "3.15", at.Format("2006/01/02 15:04:05")))
+					}
+				case "/eastmoney":
+					if tc.primaryBad {
+						w.WriteHeader(http.StatusBadGateway)
+					} else {
+						fmt.Fprintf(w, `{"rc":0,"data":{"diff":[{"f12":"09889","f13":116,"f2":3.155,"f3":6.06,"f5":330000,"f6":1003630,"f124":%d}]}}`, at.Add(-tc.primaryAge).Unix())
+					}
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			rows, result, err := collectHongKong(context.Background(), server.Client(), server.URL+"/list", server.URL+"/tencent", server.URL+"/eastmoney", func(hongKongSyncStatus) {})
+			if err != nil || len(rows) != 1 || rows[0].Source != tc.wantSource || rows[0].LastPrice != tc.wantPrice ||
+				result.Eastmoney+result.Tencent+result.Sina != 1 {
+				t.Fatalf("来源选择错误：%+v %+v %v", rows, result, err)
 			}
 		})
 	}

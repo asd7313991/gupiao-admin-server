@@ -144,7 +144,7 @@ func ListSecurities(c *gin.Context) {
 	db := pgdb.GetClient().Model(&system.StockSecurity{}).Where("deleted_at IS NULL")
 	if hongKong {
 		// 本阶段停用表示不可交易，采集记录允许只读展示，不修改证券启停状态。
-		db = db.Where("market = ? AND symbol LIKE ? AND source IN ?", "港股", "%.HK", []string{"sina", "sina/tencent", "sina/unavailable"})
+		db = db.Where("market = ? AND symbol LIKE ? AND source IN ?", "港股", "%.HK", []string{"eastmoney", "tencent", "sina", "sina/tencent", "sina/unavailable"})
 		if c.Query("sort_by") == "turnover" {
 			response.ReturnError(c, response.FAILED_PRECONDITION, "港股换手率数据暂未接入")
 			return

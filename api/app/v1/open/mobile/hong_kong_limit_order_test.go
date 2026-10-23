@@ -70,6 +70,7 @@ func TestHongKongLimitInputAndDepth(t *testing.T) {
 	if message := validateHongKongLimitInput(input); message != "" {
 		t.Fatal(message)
 	}
+
 	for _, price := range []float64{0, -1, 0.0001, 0.1061, math.NaN(), math.Inf(1)} {
 		input.LimitPrice = price
 		if validateHongKongLimitInput(input) == "" {
@@ -83,5 +84,30 @@ func TestHongKongLimitInputAndDepth(t *testing.T) {
 	}
 	if level := parseHongKongDepthLevel("0.106", "4000"); level.Price != 0.106 || level.Volume != 4000 {
 		t.Fatal(level)
+	}
+}
+
+func TestHongKongLimitDepthTimeIsIndependent(t *testing.T) {
+	now := time.Date(2026, 10, 23, 11, 0, 0, 0, time.FixedZone("HK", 8*3600))
+	quote := hongKongQuote{Code: "09889", LastPrice: 3.15, LotSize: 1000, Currency: "HKD", Kind: "GP",
+		Source: "eastmoney", QuoteAt: now.Add(-time.Minute).Unix(), DepthAt: now.Add(-31 * time.Minute).Unix(),
+		Ask: []orderBookLevel{{Price: 3.16, Volume: 1000}}}
+	order := system.LimitOrder{Symbol: "09889.HK", Direction: "买入", LimitPrice: 3.2}
+	var settings mobileTradeSettings
+	settings.Trade.AllDay = true
+	if _, match := hongKongLimitMatchPrice(order, quote, now, settings); match {
+		t.Fatal("东方财富新价格不得使腾讯旧盘口变成有效盘口")
+	}
+	quote.DepthAt = 0
+	if _, match := hongKongLimitMatchPrice(order, quote, now, settings); match {
+		t.Fatal("缺少盘口时间不得使用最新价时间代替")
+	}
+	quote.DepthAt = now.Add(-30 * time.Minute).Unix()
+	if price, match := hongKongLimitMatchPrice(order, quote, now, settings); !match || price != 3.16 {
+		t.Fatal("30分钟内有效卖盘应允许模拟成交")
+	}
+	quote.DepthAt = now.Add(61 * time.Second).Unix()
+	if _, match := hongKongLimitMatchPrice(order, quote, now, settings); match {
+		t.Fatal("超前盘口不得成交")
 	}
 }

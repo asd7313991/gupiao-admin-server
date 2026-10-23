@@ -128,6 +128,21 @@ func TestSaveHongKongSecurities(t *testing.T) {
 		if saved.LastPrice != 410.123 || saved.Source != "sina/tencent" || saved.QuoteAt != 1792476000 || saved.Board != "人工分类" || saved.Status != system.StatusDisabled {
 			t.Errorf("重复同步未保留报价或人工状态：%+v", saved)
 		}
+		for _, incoming := range []system.StockSecurity{
+			{Code: "00700", Symbol: "00700.HK", Market: "港股", Name: "腾讯控股", LastPrice: 400, QuoteAt: 1792475999, Source: "eastmoney"},
+			{Code: "00700", Symbol: "00700.HK", Market: "港股", Name: "腾讯控股", Source: "sina/unavailable"},
+		} {
+			if err := saveHongKongSecurities(context.Background(), tx, []system.StockSecurity{incoming}); err != nil {
+				return err
+			}
+			var kept system.StockSecurity
+			if err := tx.First(&kept, saved.ID).Error; err != nil {
+				return err
+			}
+			if kept.LastPrice != saved.LastPrice || kept.QuoteAt != saved.QuoteAt || kept.Source != saved.Source {
+				t.Errorf("旧报价或无报价不应覆盖已有较新行情：%+v", kept)
+			}
+		}
 		var added system.StockSecurity
 		if err := tx.Where("code = ?", "09988").First(&added).Error; err != nil {
 			return err

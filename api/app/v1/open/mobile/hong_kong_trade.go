@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	stock "api-server/api/app/v1/private/admin/platform/stock"
 	"api-server/api/middleware"
 	"api-server/api/response"
 	"api-server/config"
@@ -29,17 +30,18 @@ import (
 )
 
 type hongKongQuote struct {
-	Code       string           `json:"code"`
-	LastPrice  float64          `json:"last_price"`
-	ChangeRate float64          `json:"change_rate"`
-	LotSize    float64          `json:"lot_size"`
-	Currency   string           `json:"currency"`
-	Kind       string           `json:"kind"`
-	QuoteAt    int64            `json:"quote_at"`
-	DepthAt    int64            `json:"depth_at"`
-	Source     string           `json:"source"`
-	Bid        []orderBookLevel `json:"bid"`
-	Ask        []orderBookLevel `json:"ask"`
+	SyncWarning string           `json:"sync_warning,omitempty"`
+	Code        string           `json:"code"`
+	LastPrice   float64          `json:"last_price"`
+	ChangeRate  float64          `json:"change_rate"`
+	LotSize     float64          `json:"lot_size"`
+	Currency    string           `json:"currency"`
+	Kind        string           `json:"kind"`
+	QuoteAt     int64            `json:"quote_at"`
+	DepthAt     int64            `json:"depth_at"`
+	Source      string           `json:"source"`
+	Bid         []orderBookLevel `json:"bid"`
+	Ask         []orderBookLevel `json:"ask"`
 }
 
 func tradeMarketScope(db *gorm.DB, market string) *gorm.DB {
@@ -248,6 +250,7 @@ func HongKongTradeQuote(c *gin.Context) {
 		response.ReturnError(c, response.UNAVAILABLE, "港股报价暂不可用，请重试")
 		return
 	}
+	quote.SyncWarning = stock.PriorityWarning(security.Symbol)
 	settings, err := loadMobileTradeSettings()
 	if err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取港股交易配置失败")

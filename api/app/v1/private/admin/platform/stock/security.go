@@ -292,13 +292,28 @@ func SyncEastmoneyData(maxSyncRows int) (int, error) {
 			return 0, fmt.Errorf("腾讯全市场备用行情失败：%w", err)
 		}
 	}
-	err = pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date", "last_price", "change_rate", "volume", "amount", "turnover", "source", "quote_at", "updated_at"})}).CreateInBatches(&securities, 100).Error
-	})
+	err = saveASecurities(context.Background(), pgdb.GetClient(), securities)
 	if err != nil {
 		return 0, err
 	}
 	return len(securities), nil
+}
+
+func aStockSnapshotUpdates(now time.Time) clause.Set {
+	updates := clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "board", "list_date"})
+	for _, column := range []string{"last_price", "change_rate", "volume", "amount", "turnover", "source", "quote_at", "updated_at"} {
+		updates = append(updates, clause.Assignment{Column: clause.Column{Name: column},
+			Value: gorm.Expr("CASE WHEN EXCLUDED.last_price > 0 AND EXCLUDED.quote_at > 0 AND EXCLUDED.quote_at <= ? AND EXCLUDED.quote_at >= stock_securities.quote_at THEN EXCLUDED."+column+" ELSE stock_securities."+column+" END", now.Unix()+60)})
+	}
+	return updates
+}
+
+func saveASecurities(ctx context.Context, db *gorm.DB, securities []system.StockSecurity) error {
+	securities = orderedQuoteRows(securities)
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "code"}}, DoUpdates: aStockSnapshotUpdates(time.Now())}).
+			CreateInBatches(&securities, 100).Error
+	})
 }
 
 func fillTencentPrices(client *http.Client, securities []system.StockSecurity) error {

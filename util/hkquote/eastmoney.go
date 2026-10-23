@@ -37,6 +37,52 @@ func FetchEastmoney(ctx context.Context, client *http.Client, endpoint string, c
 		requested[code] = true
 		secids = append(secids, "116."+code)
 	}
+	markets := make(map[string]int, len(codes))
+	for _, code := range codes {
+		markets[code] = 116
+	}
+	return fetchEastmoneyMarkets(ctx, client, endpoint, secids, requested, markets)
+}
+
+func FetchEastmoneySymbols(ctx context.Context, client *http.Client, endpoint string, symbols []string) (map[string]Quote, error) {
+	if len(symbols) == 0 || len(symbols) > 100 {
+		return nil, fmt.Errorf("东方财富每批须为1至100只")
+	}
+	secids := make([]string, 0, len(symbols))
+	requested, markets, byCode := make(map[string]bool), make(map[string]int), make(map[string]string)
+	for _, symbol := range symbols {
+		parts := strings.Split(symbol, ".")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("东方财富证券代码无效：%s", symbol)
+		}
+		code, size, market := parts[0], 6, 0
+		switch parts[1] {
+		case "SH":
+			market = 1
+		case "SZ", "BJ":
+		case "HK":
+			size, market = 5, 116
+		default:
+			return nil, fmt.Errorf("东方财富证券市场无效：%s", symbol)
+		}
+		if len(code) != size || strings.Trim(code, "0123456789") != "" || requested[code] {
+			return nil, fmt.Errorf("东方财富证券代码无效或重复：%s", symbol)
+		}
+		requested[code], markets[code], byCode[code] = true, market, symbol
+		secids = append(secids, fmt.Sprintf("%d.%s", market, code))
+	}
+	values, err := fetchEastmoneyMarkets(ctx, client, endpoint, secids, requested, markets)
+	if err != nil {
+		return nil, err
+	}
+	quotes := make(map[string]Quote, len(values))
+	for code, quote := range values {
+		quotes[byCode[code]] = quote
+	}
+	return quotes, nil
+}
+
+func fetchEastmoneyMarkets(ctx context.Context, client *http.Client, endpoint string, secids []string, requested map[string]bool, markets map[string]int) (map[string]Quote, error) {
 	query := url.Values{
 		"secids": {strings.Join(secids, ",")},
 		"fields": {"f12,f13,f2,f3,f5,f6,f124"},
@@ -55,25 +101,33 @@ func FetchEastmoney(ctx context.Context, client *http.Client, endpoint string, c
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("东方财富港股响应状态码 %d", res.StatusCode)
+		return nil, fmt.Errorf("东方财富行情响应状态码 %d", res.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(body) > 2<<20 {
-		return nil, fmt.Errorf("东方财富港股响应超过大小限制")
+		return nil, fmt.Errorf("东方财富行情响应超过大小限制")
 	}
-	return parseEastmoney(body, requested, time.Now())
+	return parseEastmoneyMarkets(body, requested, markets, time.Now())
 }
 
 func parseEastmoney(body []byte, requested map[string]bool, now time.Time) (map[string]Quote, error) {
+	markets := make(map[string]int, len(requested))
+	for code := range requested {
+		markets[code] = 116
+	}
+	return parseEastmoneyMarkets(body, requested, markets, now)
+}
+
+func parseEastmoneyMarkets(body []byte, requested map[string]bool, markets map[string]int, now time.Time) (map[string]Quote, error) {
 	var payload struct {
 		RC   *int `json:"rc"`
 		Data *struct {
 			Diff []struct {
 				Code       string          `json:"f12"`
-				Market     int             `json:"f13"`
+				Market     *int            `json:"f13"`
 				Price      json.RawMessage `json:"f2"`
 				ChangeRate json.RawMessage `json:"f3"`
 				Volume     json.RawMessage `json:"f5"`
@@ -83,16 +137,16 @@ func parseEastmoney(body []byte, requested map[string]bool, now time.Time) (map[
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("东方财富港股响应格式无效：%w", err)
+		return nil, fmt.Errorf("东方财富行情响应格式无效：%w", err)
 	}
 	if payload.RC == nil || *payload.RC != 0 || payload.Data == nil || payload.Data.Diff == nil {
-		return nil, fmt.Errorf("东方财富港股未返回有效数据")
+		return nil, fmt.Errorf("东方财富行情未返回有效数据")
 	}
 	quotes := make(map[string]Quote)
 	seen := make(map[string]bool)
 	for _, item := range payload.Data.Diff {
-		if !requested[item.Code] || item.Market != 116 || seen[item.Code] {
-			return nil, fmt.Errorf("东方财富港股代码或市场不匹配：%s", item.Code)
+		if !requested[item.Code] || item.Market == nil || *item.Market != markets[item.Code] || seen[item.Code] {
+			return nil, fmt.Errorf("东方财富行情代码或市场不匹配：%s", item.Code)
 		}
 		seen[item.Code] = true
 		rawFields := []json.RawMessage{item.Price, item.ChangeRate, item.Volume, item.Amount, item.QuoteAt}
@@ -106,7 +160,7 @@ func parseEastmoney(body []byte, requested map[string]bool, now time.Time) (map[
 			}
 			value, err := strconv.ParseFloat(text, 64)
 			if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
-				return nil, fmt.Errorf("东方财富港股字段无效：%s", item.Code)
+				return nil, fmt.Errorf("东方财富行情字段无效：%s", item.Code)
 			}
 			values[index] = value
 		}

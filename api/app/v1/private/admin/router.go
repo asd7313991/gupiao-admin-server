@@ -152,6 +152,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	stockGroup.POST("/securities/sync/eastmoney", platformStock.SyncEastmoney)
 	stockGroup.POST("/securities/sync/hong-kong", platformStock.SyncHongKong)
 	stockGroup.GET("/securities/sync/hong-kong", platformStock.HongKongSyncStatus)
+	stockGroup.GET("/securities/sync/priority", platformStock.PrioritySyncStatus)
 
 	financeGroup := group.Group("/finance", middleware.PlatformMenuAccess)
 	financeGroup.GET("/recharges", platformFinance.ListRecharges)

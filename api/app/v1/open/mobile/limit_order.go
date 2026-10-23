@@ -349,6 +349,10 @@ func limitOrderMatchPrice(order system.LimitOrder, security system.StockSecurity
 	if err != nil {
 		return 0, false
 	}
+	if err := validateAStockTradeQuote(book, time.Now(), true); err != nil {
+		zap.L().Warn("A股限价盘口不可用", zap.Uint("order_id", order.ID), zap.String("symbol", security.Symbol), zap.Error(err))
+		return 0, false
+	}
 	return matchPriceFromOrderBook(order, book)
 }
 

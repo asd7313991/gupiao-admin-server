@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	stock "api-server/api/app/v1/private/admin/platform/stock"
 	"api-server/api/middleware"
 	"api-server/api/response"
 	"api-server/db/pgdb"
@@ -96,5 +97,8 @@ func findSecurity(code string) (system.StockSecurity, bool) {
 	var security system.StockSecurity
 	code = strings.TrimSpace(code)
 	err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&security).Error
+	if err == nil {
+		stock.TouchPrioritySecurity(security.Symbol)
+	}
 	return security, err == nil
 }

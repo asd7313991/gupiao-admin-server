@@ -113,3 +113,39 @@ func TestLiveHongKongValuation(t *testing.T) {
 		t.Logf("%s：价格%.3f，原始报价时间%d，来源%s", symbol, quote.Price, quote.At, quote.Source)
 	}
 }
+
+func TestLatestAStockSelectsValidSourceWithoutOldPriceFallback(t *testing.T) {
+	now := clock("2026-10-23 11:20:00")
+	for _, tc := range []struct {
+		name, broken, tencentAt, eastmoneyAt, source string
+		price                                        float64
+	}{
+		{"东方财富较新", "", "20261023111800", "2026-10-23 11:19:00", "eastmoney", 112.3},
+		{"腾讯较新", "", "20261023111900", "2026-10-23 11:18:00", "tencent", 112.2},
+		{"腾讯故障", "/tencent", "20261023111900", "2026-10-23 11:19:00", "eastmoney", 112.3},
+		{"东方财富故障", "/eastmoney", "20261023111900", "2026-10-23 11:19:00", "tencent", 112.2},
+		{"腾讯过期", "", "20261023094646", "2026-10-23 11:19:00", "eastmoney", 112.3},
+		{"两源均过期", "", "20261023094646", "2026-10-23 09:46:46", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == tc.broken {
+					http.Error(w, "unavailable", http.StatusBadGateway)
+				} else if r.URL.Path == "/tencent" {
+					fmt.Fprint(w, fixture("sz002384", "002384", "112.2", tc.tencentAt))
+				} else {
+					fmt.Fprintf(w, `{"rc":0,"data":{"diff":[{"f12":"002384","f13":0,"f2":112.3,"f3":0,"f5":100,"f6":11230,"f124":%d}]}}`, clock(tc.eastmoneyAt).Unix())
+				}
+			}))
+			defer server.Close()
+			quotes, err := FetchLatest(context.Background(), server.Client(), server.URL+"/tencent?q=", server.URL+"/eastmoney", []string{"002384.SZ"}, now)
+			if tc.source == "" {
+				if err == nil || quotes != nil {
+					t.Fatal("主备都过期时仍须拒绝成交及完整估值")
+				}
+			} else if err != nil || quotes["002384.SZ"].Price != tc.price || quotes["002384.SZ"].Source != tc.source {
+				t.Fatalf("A股主备切换错误：%v，%v", quotes, err)
+			}
+		})
+	}
+}

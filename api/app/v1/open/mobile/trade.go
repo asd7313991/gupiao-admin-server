@@ -118,6 +118,16 @@ type tradePositionView struct {
 	ProfitRate   float64 `json:"profit_rate"`
 }
 
+type tradeHoldingView struct {
+	ID           uint    `json:"id"`
+	Currency     string  `json:"currency"`
+	Symbol       string  `json:"symbol"`
+	StockName    string  `json:"stock_name"`
+	PositionQty  float64 `json:"position_qty"`
+	AvailableQty float64 `json:"available_qty"`
+	Leverage     float64 `json:"leverage"`
+}
+
 var errTradeRejected = errors.New("trade rejected")
 
 func MobileTradeSettings(c *gin.Context) {
@@ -135,12 +145,35 @@ func MobileTradeSettings(c *gin.Context) {
 	})
 }
 
+func customerPositionQuery(db *gorm.DB, customerID uint, market string) *gorm.DB {
+	return tradeMarketScope(db, market).Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC")
+}
+
+func holdingView(item system.TradePosition) tradeHoldingView {
+	return tradeHoldingView{ID: item.ID, Currency: item.Currency, Symbol: item.Symbol, StockName: item.StockName,
+		PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, Leverage: positionLeverage(item)}
+}
+
+func ListCustomerHoldings(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	customerID := middleware.GetCurrentCustomerID(c)
+	var items []system.TradePosition
+	if err := customerPositionQuery(pgdb.GetClient(), customerID, c.Query("market")).Find(&items).Error; err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取持仓数量失败")
+		return
+	}
+	views := make([]tradeHoldingView, 0, len(items))
+	for _, item := range items {
+		views = append(views, holdingView(item))
+	}
+	response.ReturnData(c, views)
+}
+
 func ListCustomerPositions(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	customerID := middleware.GetCurrentCustomerID(c)
 	var items []system.TradePosition
-	db := tradeMarketScope(pgdb.GetClient(), c.Query("market"))
-	if err := db.Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC").Find(&items).Error; err != nil {
+	if err := customerPositionQuery(pgdb.GetClient(), customerID, c.Query("market")).Find(&items).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取持仓失败")
 		return
 	}
@@ -226,12 +259,14 @@ func PlaceOrder(c *gin.Context) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, "港股请使用独立港币模拟交易入口")
 		return
 	}
-	book, err := fetchOrderBook(security)
-	if err != nil || book.LastPrice <= 0 {
+	quotes, err := positionquote.FetchLatest(c.Request.Context(), &http.Client{Timeout: 8 * time.Second},
+		"https://qt.gtimg.cn/q=", hkquote.EastmoneyURL, []string{security.Symbol}, time.Now())
+	if err != nil {
+		zap.L().Warn("A股市价交易主备报价不可用", zap.String("symbol", security.Symbol), zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "行情数据暂时不可用，请稍后重试")
 		return
 	}
-	security.LastPrice = book.LastPrice
+	security.LastPrice = quotes[security.Symbol].Price
 	if message := validateSecurityTrade(security, input, settings); message != "" {
 		response.ReturnError(c, response.FAILED_PRECONDITION, message)
 		return
@@ -262,6 +297,26 @@ func PlaceOrder(c *gin.Context) {
 		return
 	}
 	response.ReturnData(c, result)
+}
+
+func validateAStockTradeQuote(book orderBookView, now time.Time, limit bool) error {
+	if book.LastPrice <= 0 || math.IsNaN(book.LastPrice) || math.IsInf(book.LastPrice, 0) {
+		return fmt.Errorf("A股交易报价价格无效，请刷新报价")
+	}
+	at, err := time.ParseInLocation("20060102150405", book.UpdatedAt, time.FixedZone("UTC+8", 8*3600))
+	if err != nil || at.Unix() <= 0 || at.Unix() > now.Unix()+60 {
+		return fmt.Errorf("A股交易报价时间无效，请刷新报价")
+	}
+	if limit {
+		if now.Unix()-at.Unix() > 30*60 {
+			return fmt.Errorf("A股限价盘口超过30分钟，等待有效新盘口")
+		}
+		return nil
+	}
+	if err := positionquote.ValidateTime(at.Unix(), now, false); err != nil {
+		return fmt.Errorf("A股交易报价不可用：%w", err)
+	}
+	return nil
 }
 
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string) error {

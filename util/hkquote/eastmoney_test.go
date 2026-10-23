@@ -75,3 +75,38 @@ func TestFetchEastmoneyHTTPFailure(t *testing.T) {
 		t.Fatal("行情接口失败不得返回成功")
 	}
 }
+
+func TestEastmoneySymbolsRejectsMissingMarket(t *testing.T) {
+	now := time.Now()
+	for _, market := range []string{"", `"f13":1,`} {
+		body := fmt.Sprintf(`{"rc":0,"data":{"diff":[{"f12":"002384",%s"f2":112.3,"f3":0,"f5":100,"f6":11230,"f124":%d}]}}`, market, now.Unix())
+		if _, err := parseEastmoneyMarkets([]byte(body), map[string]bool{"002384": true}, map[string]int{"002384": 0}, now); err == nil {
+			t.Fatal("深市市场字段缺失不能被默认为0，错误市场也必须拒绝")
+		}
+	}
+}
+
+func TestFetchEastmoneySymbolsUsesActualMarkets(t *testing.T) {
+	at := time.Now().Add(-time.Minute).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("secids") != "1.600519,0.002384,0.920001,116.00700" {
+			t.Errorf("A股/港股主备代码或市场映射错误：%s", r.URL.RawQuery)
+		}
+		fmt.Fprintf(w, `{"rc":0,"data":{"diff":[
+				{"f12":"600519","f13":1,"f2":100,"f3":1,"f5":100,"f6":10000,"f124":%d},
+				{"f12":"002384","f13":0,"f2":112.3,"f3":2,"f5":200,"f6":22460,"f124":%d},
+				{"f12":"920001","f13":0,"f2":20,"f3":-1,"f5":300,"f6":6000,"f124":%d},
+				{"f12":"00700","f13":116,"f2":500,"f3":3,"f5":400,"f6":200000,"f124":%d}]}}`, at, at, at, at)
+	}))
+	defer server.Close()
+	symbols := []string{"600519.SH", "002384.SZ", "920001.BJ", "00700.HK"}
+	quotes, err := FetchEastmoneySymbols(context.Background(), server.Client(), server.URL, symbols)
+	if err != nil || len(quotes) != 4 || quotes["002384.SZ"].LastPrice != 112.3 || quotes["00700.HK"].QuoteAt != at {
+		t.Fatalf("A股/港股报价及原始时间错误：%v，%v", quotes, err)
+	}
+	for _, symbols := range [][]string{nil, {"600519.US"}, {"002384.SZ", "002384.SZ"}, {"ABCDEF.SH"}, {"700.HK"}} {
+		if _, err := FetchEastmoneySymbols(context.Background(), server.Client(), server.URL, symbols); err == nil {
+			t.Fatalf("应拒绝无效证券代码：%v", symbols)
+		}
+	}
+}

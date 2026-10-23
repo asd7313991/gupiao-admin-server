@@ -16,6 +16,7 @@ import (
 	"golang.org/x/text/transform"
 	"gorm.io/gorm"
 
+	stock "api-server/api/app/v1/private/admin/platform/stock"
 	"api-server/api/middleware"
 	"api-server/api/response"
 	"api-server/db/pgdb"
@@ -23,43 +24,45 @@ import (
 )
 
 type securityView struct {
-	ID         uint    `json:"id"`
-	Code       string  `json:"code"`
-	Symbol     string  `json:"symbol"`
-	Market     string  `json:"market"`
-	Name       string  `json:"name"`
-	Exchange   string  `json:"exchange"`
-	Board      string  `json:"board"`
-	LastPrice  float64 `json:"last_price"`
-	ChangeRate float64 `json:"change_rate"`
-	Volume     float64 `json:"volume"`
-	Amount     float64 `json:"amount"`
-	Turnover   float64 `json:"turnover"`
-	Source     string  `json:"source"`
-	QuoteAt    int64   `json:"quote_at"`
-	UpdatedAt  int64   `json:"updated_at"`
+	SyncWarning string  `json:"sync_warning,omitempty"`
+	ID          uint    `json:"id"`
+	Code        string  `json:"code"`
+	Symbol      string  `json:"symbol"`
+	Market      string  `json:"market"`
+	Name        string  `json:"name"`
+	Exchange    string  `json:"exchange"`
+	Board       string  `json:"board"`
+	LastPrice   float64 `json:"last_price"`
+	ChangeRate  float64 `json:"change_rate"`
+	Volume      float64 `json:"volume"`
+	Amount      float64 `json:"amount"`
+	Turnover    float64 `json:"turnover"`
+	Source      string  `json:"source"`
+	QuoteAt     int64   `json:"quote_at"`
+	UpdatedAt   int64   `json:"updated_at"`
 }
 
 type securityDetailView struct {
-	ID         uint    `json:"id"`
-	Code       string  `json:"code"`
-	Symbol     string  `json:"symbol"`
-	Market     string  `json:"market"`
-	Name       string  `json:"name"`
-	Exchange   string  `json:"exchange"`
-	Board      string  `json:"board"`
-	LastPrice  float64 `json:"last_price"`
-	ChangeRate float64 `json:"change_rate"`
-	Volume     float64 `json:"volume"`
-	Amount     float64 `json:"amount"`
-	Turnover   float64 `json:"turnover"`
-	Source     string  `json:"source"`
-	QuoteAt    int64   `json:"quote_at"`
-	UpdatedAt  int64   `json:"updated_at"`
-	Open       float64 `json:"open"`
-	High       float64 `json:"high"`
-	Low        float64 `json:"low"`
-	PrevClose  float64 `json:"prev_close"`
+	SyncWarning string  `json:"sync_warning,omitempty"`
+	ID          uint    `json:"id"`
+	Code        string  `json:"code"`
+	Symbol      string  `json:"symbol"`
+	Market      string  `json:"market"`
+	Name        string  `json:"name"`
+	Exchange    string  `json:"exchange"`
+	Board       string  `json:"board"`
+	LastPrice   float64 `json:"last_price"`
+	ChangeRate  float64 `json:"change_rate"`
+	Volume      float64 `json:"volume"`
+	Amount      float64 `json:"amount"`
+	Turnover    float64 `json:"turnover"`
+	Source      string  `json:"source"`
+	QuoteAt     int64   `json:"quote_at"`
+	UpdatedAt   int64   `json:"updated_at"`
+	Open        float64 `json:"open"`
+	High        float64 `json:"high"`
+	Low         float64 `json:"low"`
+	PrevClose   float64 `json:"prev_close"`
 }
 
 type kLinePoint struct {
@@ -129,7 +132,7 @@ type tencentFiveDayResponse struct {
 }
 
 func toSecurityView(item system.StockSecurity) securityView {
-	return securityView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
+	return securityView{SyncWarning: stock.PriorityWarning(item.Symbol), ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
 }
 
 func ListSecurities(c *gin.Context) {
@@ -203,7 +206,8 @@ func SecurityDetail(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "读取证券详情失败")
 		return
 	}
-	detail := securityDetailView{ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
+	stock.TouchPrioritySecurity(item.Symbol)
+	detail := securityDetailView{SyncWarning: stock.PriorityWarning(item.Symbol), ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
 	if isHongKongSecurity(item) {
 		response.ReturnData(c, detail)
 		return
@@ -268,6 +272,23 @@ func SecurityKLines(c *gin.Context) {
 	response.ReturnData(c, gin.H{"code": item.Code, "period": period, "records": points})
 }
 
+func SecurityQuote(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	var security system.StockSecurity
+	code := strings.TrimSpace(c.Param("code"))
+	err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&security).Error
+	if err == gorm.ErrRecordNotFound {
+		response.ReturnError(c, response.NOT_FOUND, "证券不存在")
+		return
+	}
+	if err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "读取证券报价失败")
+		return
+	}
+	stock.TouchPrioritySecurity(security.Symbol)
+	response.ReturnData(c, toSecurityView(security))
+}
+
 func SecurityOrderBook(c *gin.Context) {
 	var item system.StockSecurity
 	code := strings.TrimSpace(c.Param("code"))
@@ -279,6 +300,7 @@ func SecurityOrderBook(c *gin.Context) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, "港股盘口暂未开放，模拟交易请使用独立港币入口")
 		return
 	}
+	stock.TouchPrioritySecurity(item.Symbol)
 	book, err := fetchOrderBook(item)
 	if err != nil {
 		response.ReturnError(c, response.UNAVAILABLE, "盘口数据暂时不可用")

@@ -320,6 +320,7 @@ func saveHongKongSecurities(ctx context.Context, db *gorm.DB, securities []syste
 	if len(securities) == 0 {
 		return fmt.Errorf("港股证券列表为空，已取消写入")
 	}
+	securities = orderedQuoteRows(securities)
 	updates := clause.AssignmentColumns([]string{"symbol", "market", "name", "exchange", "updated_at"})
 	for _, column := range []string{"last_price", "change_rate", "volume", "amount", "quote_at", "source"} {
 		updates = append(updates, clause.Assignment{

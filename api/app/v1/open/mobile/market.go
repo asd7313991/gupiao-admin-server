@@ -23,6 +23,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionquote"
 )
 
 type securityView struct {
@@ -45,6 +46,9 @@ type securityView struct {
 }
 
 type securityDetailView struct {
+	Currency          string  `json:"currency,omitempty"`
+	LotSize           float64 `json:"lot_size,omitempty"`
+	SecurityKind      string  `json:"security_kind,omitempty"`
 	SnapshotValidated bool    `json:"snapshot_validated"`
 	SyncWarning       string  `json:"sync_warning,omitempty"`
 	ID                uint    `json:"id"`
@@ -69,19 +73,24 @@ type securityDetailView struct {
 }
 
 type kLinePoint struct {
-	Time     string  `json:"time"`
-	Open     float64 `json:"open"`
-	High     float64 `json:"high"`
-	Low      float64 `json:"low"`
-	Close    float64 `json:"close"`
-	Volume   float64 `json:"volume"`
-	Amount   float64 `json:"amount"`
-	Turnover float64 `json:"turnover"`
+	Time            string  `json:"time"`
+	Open            float64 `json:"open"`
+	High            float64 `json:"high"`
+	Low             float64 `json:"low"`
+	Close           float64 `json:"close"`
+	Volume          float64 `json:"volume"`
+	Amount          float64 `json:"amount"`
+	Turnover        float64 `json:"turnover"`
+	AveragePrice    float64 `json:"average_price,omitempty"`
+	PrevClose       float64 `json:"prev_close,omitempty"`
+	AmountAvailable *bool   `json:"amount_available,omitempty"`
 }
 
 type orderBookLevel struct {
-	Price  float64 `json:"price"`
-	Volume float64 `json:"volume"`
+	Level           int     `json:"level,omitempty"`
+	Price           float64 `json:"price"`
+	Volume          float64 `json:"volume"`
+	VolumeAvailable *bool   `json:"volume_available,omitempty"`
 }
 
 type orderBookView struct {
@@ -97,6 +106,8 @@ type orderBookView struct {
 	Bid        []orderBookLevel `json:"bid"`
 	Ask        []orderBookLevel `json:"ask"`
 	UpdatedAt  string           `json:"updated_at"`
+	Source     string           `json:"source,omitempty"`
+	QuoteAt    int64            `json:"quote_at,omitempty"`
 }
 
 type tencentKLineStock struct {
@@ -211,16 +222,16 @@ func SecurityDetail(c *gin.Context) {
 	}
 	stock.TouchPrioritySecurity(item.Symbol)
 	detail := securityDetailView{SyncWarning: stock.PriorityWarning(item.Symbol), ID: item.ID, Code: item.Code, Symbol: item.Symbol, Market: item.Market, Name: item.Name, Exchange: item.Exchange, Board: item.Board, LastPrice: item.LastPrice, ChangeRate: item.ChangeRate, Volume: item.Volume, Amount: item.Amount, Turnover: item.Turnover, Source: item.Source, QuoteAt: item.QuoteAt, UpdatedAt: item.UpdatedAt.Unix()}
-	if isHongKongSecurity(item) {
-		response.ReturnData(c, detail)
-		return
-	}
 	body, err := fetchTencentQuoteBody(c.Request.Context(), item)
 	if err == nil {
-		detail, err = parseAStockDetailSnapshot(body, item, time.Now())
+		if isHongKongSecurity(item) {
+			detail, _, err = parseHongKongDetailSnapshot(body, item, time.Now())
+		} else {
+			detail, err = parseAStockDetailSnapshot(body, item, time.Now())
+		}
 	}
 	if err != nil {
-		zap.L().Warn("A股详情报价快照不可用", zap.String("symbol", item.Symbol), zap.Error(err))
+		zap.L().Warn("证券详情报价快照不可用", zap.String("symbol", item.Symbol), zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "完整行情快照暂不可用，请稍后刷新；不使用日K线或分时数据拼接报价")
 		return
 	}
@@ -233,10 +244,6 @@ func SecurityKLines(c *gin.Context) {
 	code := strings.TrimSpace(c.Param("code"))
 	if err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&item).Error; err != nil {
 		response.ReturnError(c, response.NOT_FOUND, "证券不存在")
-		return
-	}
-	if isHongKongSecurity(item) {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "港股图表暂未接入")
 		return
 	}
 	period := c.DefaultQuery("period", "day")
@@ -255,6 +262,7 @@ func SecurityKLines(c *gin.Context) {
 		points, _, err = fetchKLines(item, period, limit)
 	}
 	if err != nil {
+		zap.L().Warn("证券图表数据不可用", zap.String("symbol", item.Symbol), zap.String("period", period), zap.Error(err))
 		response.ReturnError(c, response.UNAVAILABLE, "K 线数据暂时不可用")
 		return
 	}
@@ -284,6 +292,7 @@ func SecurityQuote(c *gin.Context) {
 }
 
 func SecurityOrderBook(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var item system.StockSecurity
 	code := strings.TrimSpace(c.Param("code"))
 	if err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&item).Error; err != nil {
@@ -291,7 +300,17 @@ func SecurityOrderBook(c *gin.Context) {
 		return
 	}
 	if isHongKongSecurity(item) {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "港股盘口暂未开放，模拟交易请使用独立港币入口")
+		body, err := fetchTencentQuoteBody(c.Request.Context(), item)
+		var book orderBookView
+		if err == nil {
+			book, err = parseHongKongOrderBook(body, item, time.Now())
+		}
+		if err != nil {
+			zap.L().Warn("港股展示盘口不可用", zap.String("symbol", item.Symbol), zap.Error(err))
+			response.ReturnError(c, response.UNAVAILABLE, "港股盘口暂不可用，请稍后重试")
+			return
+		}
+		response.ReturnData(c, book)
 		return
 	}
 	stock.TouchPrioritySecurity(item.Symbol)
@@ -334,6 +353,9 @@ func fetchOrderBook(item system.StockSecurity) (orderBookView, error) {
 
 func fetchTencentQuoteBody(ctx context.Context, item system.StockSecurity) (string, error) {
 	symbol := quoteSymbol(item)
+	if isHongKongSecurity(item) {
+		symbol = strings.Join(positionquote.TencentCodes(item.Symbol), ",")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(symbol), nil)
 	if err != nil {
 		return "", err
@@ -385,6 +407,9 @@ func fetchMinuteLines(item system.StockSecurity, fiveDays bool) ([]kLinePoint, e
 			return nil, fmt.Errorf("invalid minute response")
 		}
 		days = append(days, payload.Data[symbol].Data)
+	}
+	if isHongKongSecurity(item) {
+		return parseHongKongMinuteDays(days, fiveDays)
 	}
 	points := make([]kLinePoint, 0, len(days)*240)
 	for _, day := range days {
@@ -463,6 +488,10 @@ func fetchKLines(item system.StockSecurity, period string, limit int) ([]kLinePo
 			rows = stock.Month
 		}
 	}
+	if isHongKongSecurity(item) {
+		points, err := parseHongKongKLineRows(rows)
+		return points, 0, err
+	}
 	points := make([]kLinePoint, 0, len(rows))
 	for _, fields := range rows {
 		if len(fields) < 6 {
@@ -477,6 +506,9 @@ func fetchKLines(item system.StockSecurity, period string, limit int) ([]kLinePo
 }
 
 func quoteSymbol(item system.StockSecurity) string {
+	if isHongKongSecurity(item) {
+		return positionquote.Symbol(item.Symbol)
+	}
 	prefix := "sz"
 	if item.Exchange == "上交所" {
 		prefix = "sh"

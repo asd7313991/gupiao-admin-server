@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"gorm.io/gorm"
@@ -43,26 +45,27 @@ type securityView struct {
 }
 
 type securityDetailView struct {
-	SyncWarning string  `json:"sync_warning,omitempty"`
-	ID          uint    `json:"id"`
-	Code        string  `json:"code"`
-	Symbol      string  `json:"symbol"`
-	Market      string  `json:"market"`
-	Name        string  `json:"name"`
-	Exchange    string  `json:"exchange"`
-	Board       string  `json:"board"`
-	LastPrice   float64 `json:"last_price"`
-	ChangeRate  float64 `json:"change_rate"`
-	Volume      float64 `json:"volume"`
-	Amount      float64 `json:"amount"`
-	Turnover    float64 `json:"turnover"`
-	Source      string  `json:"source"`
-	QuoteAt     int64   `json:"quote_at"`
-	UpdatedAt   int64   `json:"updated_at"`
-	Open        float64 `json:"open"`
-	High        float64 `json:"high"`
-	Low         float64 `json:"low"`
-	PrevClose   float64 `json:"prev_close"`
+	SnapshotValidated bool    `json:"snapshot_validated"`
+	SyncWarning       string  `json:"sync_warning,omitempty"`
+	ID                uint    `json:"id"`
+	Code              string  `json:"code"`
+	Symbol            string  `json:"symbol"`
+	Market            string  `json:"market"`
+	Name              string  `json:"name"`
+	Exchange          string  `json:"exchange"`
+	Board             string  `json:"board"`
+	LastPrice         float64 `json:"last_price"`
+	ChangeRate        float64 `json:"change_rate"`
+	Volume            float64 `json:"volume"`
+	Amount            float64 `json:"amount"`
+	Turnover          float64 `json:"turnover"`
+	Source            string  `json:"source"`
+	QuoteAt           int64   `json:"quote_at"`
+	UpdatedAt         int64   `json:"updated_at"`
+	Open              float64 `json:"open"`
+	High              float64 `json:"high"`
+	Low               float64 `json:"low"`
+	PrevClose         float64 `json:"prev_close"`
 }
 
 type kLinePoint struct {
@@ -212,34 +215,20 @@ func SecurityDetail(c *gin.Context) {
 		response.ReturnData(c, detail)
 		return
 	}
-	points, previousClose, fetchErr := fetchKLines(item, "day", 2)
-	if fetchErr == nil && len(points) > 0 {
-		latest := points[len(points)-1]
-		detail.Open, detail.High, detail.Low = latest.Open, latest.High, latest.Low
-		detail.Volume, detail.Amount = latest.Volume, latest.Amount
-		detail.PrevClose = previousClose
+	body, err := fetchTencentQuoteBody(c.Request.Context(), item)
+	if err == nil {
+		detail, err = parseAStockDetailSnapshot(body, item, time.Now())
 	}
-	minutePoints, minuteErr := fetchMinuteLines(item, false)
-	if minuteErr == nil && len(minutePoints) > 0 {
-		detail.Open = minutePoints[0].Open
-		detail.High, detail.Low = minutePoints[0].High, minutePoints[0].Low
-		detail.Volume, detail.Amount = 0, 0
-		for _, point := range minutePoints {
-			if point.High > detail.High {
-				detail.High = point.High
-			}
-			if point.Low < detail.Low {
-				detail.Low = point.Low
-			}
-			detail.Volume += point.Volume
-			detail.Amount += point.Amount
-		}
-		detail.LastPrice = minutePoints[len(minutePoints)-1].Close
+	if err != nil {
+		zap.L().Warn("A股详情报价快照不可用", zap.String("symbol", item.Symbol), zap.Error(err))
+		response.ReturnError(c, response.UNAVAILABLE, "完整行情快照暂不可用，请稍后刷新；不使用日K线或分时数据拼接报价")
+		return
 	}
 	response.ReturnData(c, detail)
 }
 
 func SecurityKLines(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var item system.StockSecurity
 	code := strings.TrimSpace(c.Param("code"))
 	if err := pgdb.GetClient().Where("code = ? OR symbol = ?", code, code).First(&item).Error; err != nil {
@@ -269,7 +258,12 @@ func SecurityKLines(c *gin.Context) {
 		response.ReturnError(c, response.UNAVAILABLE, "K 线数据暂时不可用")
 		return
 	}
-	response.ReturnData(c, gin.H{"code": item.Code, "period": period, "records": points})
+	dataTime := ""
+	if len(points) > 0 {
+		dataTime = points[len(points)-1].Time
+	}
+	response.ReturnData(c, gin.H{"code": item.Code, "period": period, "records": points,
+		"source": "tencent", "data_time": dataTime, "fetched_at": time.Now().Unix()})
 }
 
 func SecurityQuote(c *gin.Context) {
@@ -310,24 +304,11 @@ func SecurityOrderBook(c *gin.Context) {
 }
 
 func fetchOrderBook(item system.StockSecurity) (orderBookView, error) {
-	symbol := quoteSymbol(item)
-	request, _ := http.NewRequest(http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(symbol), nil)
-	request.Header.Set("User-Agent", "Mozilla/5.0")
-	request.Header.Set("Referer", "https://gu.qq.com/")
-	result, err := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+	body, err := fetchTencentQuoteBody(context.Background(), item)
 	if err != nil {
 		return orderBookView{}, err
 	}
-	defer result.Body.Close()
-	if result.StatusCode != http.StatusOK {
-		return orderBookView{}, fmt.Errorf("orderbook status %d", result.StatusCode)
-	}
-	reader := transform.NewReader(result.Body, simplifiedchinese.GBK.NewDecoder())
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		return orderBookView{}, err
-	}
-	fields := strings.Split(string(body), "~")
+	fields := strings.Split(body, "~")
 	if len(fields) < 33 || number(fields[3]) <= 0 {
 		return orderBookView{}, fmt.Errorf("invalid orderbook response")
 	}
@@ -349,6 +330,30 @@ func fetchOrderBook(item system.StockSecurity) (orderBookView, error) {
 	book.LimitUp = math.Round(book.PrevClose*(1+limitRate)*100) / 100
 	book.LimitDown = math.Round(book.PrevClose*(1-limitRate)*100) / 100
 	return book, nil
+}
+
+func fetchTencentQuoteBody(ctx context.Context, item system.StockSecurity) (string, error) {
+	symbol := quoteSymbol(item)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://qt.gtimg.cn/q="+url.QueryEscape(symbol), nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	request.Header.Set("Referer", "https://gu.qq.com/")
+	result, err := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer result.Body.Close()
+	if result.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("quote status %d", result.StatusCode)
+	}
+	reader := transform.NewReader(result.Body, simplifiedchinese.GBK.NewDecoder())
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func fetchMinuteLines(item system.StockSecurity, fiveDays bool) ([]kLinePoint, error) {

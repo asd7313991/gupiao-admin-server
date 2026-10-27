@@ -146,6 +146,8 @@ type Customer struct {
 	IDCardFront           string  `json:"id_card_front"`
 	IDCardBack            string  `json:"id_card_back"`
 	VerificationVideo     string  `json:"verification_video"`
+	VerificationFace      string  `json:"verification_face"`
+	VerificationFaceAt    int64   `json:"verification_face_at"`
 	VerificationCertifyID string  `json:"verification_certify_id" gorm:"index"`
 	VerificationRemark    string  `json:"verification_remark"`
 	Remark                string  `json:"remark"`

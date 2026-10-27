@@ -25,6 +25,7 @@ import (
 	"api-server/config"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/verificationmaterial"
 )
 
 const verificationPending uint = 4
@@ -44,6 +45,8 @@ type verificationStatusView struct {
 	HasFront       bool   `json:"has_front"`
 	HasBack        bool   `json:"has_back"`
 	HasVideo       bool   `json:"has_video"`
+	HasFace        bool   `json:"has_face"`
+	CaptureMode    string `json:"capture_mode"`
 	HasTradePIN    bool   `json:"has_trade_pin"`
 	Remark         string `json:"remark"`
 	FaceConfigured bool   `json:"face_configured"`
@@ -58,11 +61,12 @@ func VerificationStatus(c *gin.Context) {
 		Verified: item.Verified, Name: item.Name, IDCardMasked: mask(item.IDCard, 6, 4),
 		BankName: item.BankName, BankCardMasked: mask(item.BankCard, 4, 4), HasFront: item.IDCardFront != "",
 		HasBack: item.IDCardBack != "", HasVideo: item.VerificationVideo != "", HasTradePIN: item.TradePassword != "", Remark: item.VerificationRemark,
-		FaceConfigured: faceRecognitionConfigured(),
+		HasFace: item.VerificationFace != "", CaptureMode: "local_photo", FaceConfigured: false,
 	})
 }
 
 func VerificationMaterial(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	item, ok := currentVerificationCustomer(c)
 	if !ok {
 		return
@@ -75,6 +79,8 @@ func VerificationMaterial(c *gin.Context) {
 		path = item.IDCardBack
 	case "video":
 		path = item.VerificationVideo
+	case "face":
+		path = item.VerificationFace
 	default:
 		response.ReturnError(c, response.INVALID_ARGUMENT, "材料类型无效")
 		return
@@ -88,14 +94,20 @@ func VerificationMaterial(c *gin.Context) {
 
 func UploadVerificationMaterial(c *gin.Context) {
 	kind := strings.TrimSpace(c.PostForm("kind"))
-	if kind != "front" && kind != "back" && kind != "video" {
+	if kind != "front" && kind != "back" && kind != "video" && kind != "face" {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "材料类型无效")
+		return
+	}
+	if kind == "face" && c.PostForm("consent") != "true" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, "请先同意采集正脸照片用于后台人工审核")
 		return
 	}
 	file, err := c.FormFile("file")
 	maxSize := int64(8 * 1024 * 1024)
 	if kind == "video" {
 		maxSize = 50 * 1024 * 1024
+	} else if kind == "face" {
+		maxSize = 2 * 1024 * 1024
 	}
 	if err != nil || file.Size <= 0 || file.Size > maxSize {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择符合大小限制的认证材料")
@@ -135,7 +147,28 @@ func UploadVerificationMaterial(c *gin.Context) {
 		return
 	}
 	path := filepath.Join(directory, name+extension)
-	if err := c.SaveUploadedFile(file, path); err != nil {
+	if kind == "face" {
+		path = filepath.Join(directory, name+".jpg")
+		if _, err := source.Seek(0, io.SeekStart); err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "读取正脸照片失败")
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(source, maxSize+1))
+		if err != nil || int64(len(data)) > maxSize {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "正脸照片读取失败或超过2MB")
+			return
+		}
+		photo, err := normalizeVerificationFace(data)
+		if err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
+			return
+		}
+		err = os.WriteFile(path, photo, 0o600)
+		if err != nil {
+			response.ReturnError(c, response.DATA_LOSS, "保存正脸照片失败")
+			return
+		}
+	} else if err := c.SaveUploadedFile(file, path); err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存照片失败")
 		return
 	}
@@ -154,6 +187,8 @@ func UploadVerificationMaterial(c *gin.Context) {
 		field = "id_card_back"
 	} else if kind == "video" {
 		field = "verification_video"
+	} else if kind == "face" {
+		field = "verification_face"
 	}
 	var previous string
 	var customer system.Customer
@@ -169,10 +204,15 @@ func UploadVerificationMaterial(c *gin.Context) {
 		previous = customer.IDCardFront
 	} else if kind == "back" {
 		previous = customer.IDCardBack
+	} else if kind == "face" {
+		previous = customer.VerificationFace
 	} else {
 		previous = customer.VerificationVideo
 	}
-	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": ""}
+	updates := map[string]any{field: path, "verified": system.StatusDisabled, "verification_remark": "", "verification_certify_id": ""}
+	if kind == "face" {
+		updates["verification_face_at"] = time.Now().Unix()
+	}
 	if err := pgdb.GetClient().Model(&customer).Updates(updates).Error; err != nil {
 		_ = os.Remove(path)
 		if originalPath != path {
@@ -286,6 +326,10 @@ func SaveVerificationIdentity(c *gin.Context) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
 		return
 	}
+	if err := verificationmaterial.CheckFace(config.VerificationStorageDir, customer.VerificationFace); err != nil {
+		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
+		return
+	}
 	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存身份资料失败")
 		return
@@ -297,8 +341,8 @@ func validateVerificationMaterials(customer system.Customer) error {
 	if customer.IDCardFront == "" || customer.IDCardBack == "" {
 		return fmt.Errorf("请先上传身份证正反面")
 	}
-	if strings.TrimSpace(customer.VerificationVideo) == "" {
-		return fmt.Errorf("请先上传认证视频")
+	if strings.TrimSpace(customer.VerificationFace) == "" {
+		return fmt.Errorf("请先拍摄并上传正脸照片")
 	}
 	return nil
 }
@@ -409,99 +453,11 @@ func SetupVerificationTradePassword(c *gin.Context) {
 }
 
 func StartFaceVerification(c *gin.Context) {
-	if !faceRecognitionConfigured() {
-		response.ReturnError(c, response.UNAVAILABLE, "百度云人脸实名认证服务未配置")
-		return
-	}
-	item, ok := currentVerificationCustomer(c)
-	if !ok {
-		return
-	}
-	if item.Name == "" || item.IDCard == "" || item.IDCardFront == "" || item.IDCardBack == "" {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面并完成身份信息提取")
-		return
-	}
-	if err := validateVerificationMaterials(item); err != nil {
-		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
-		return
-	}
-	file, err := c.FormFile("file")
-	if err != nil || file.Size <= 0 || file.Size > 2*1024*1024 {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "请选择不超过 2MB 的本人正面照片")
-		return
-	}
-	source, err := file.Open()
-	if err != nil {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "读取人脸照片失败")
-		return
-	}
-	defer source.Close()
-	image, err := io.ReadAll(io.LimitReader(source, 2*1024*1024+1))
-	if err != nil || len(image) == 0 || len(image) > 2*1024*1024 {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "读取人脸照片失败")
-		return
-	}
-	contentType := http.DetectContentType(image)
-	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/bmp" {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "仅支持 JPG、PNG 或 BMP 人脸照片")
-		return
-	}
-	token, err := baiduAccessToken()
-	if err != nil {
-		response.ReturnError(c, response.UNAVAILABLE, "获取百度云访问令牌失败")
-		return
-	}
-	body, _ := json.Marshal(map[string]any{
-		"image": base64.StdEncoding.EncodeToString(image), "image_type": "BASE64",
-		"id_card_number": item.IDCard, "name": item.Name,
-		"quality_control": "HIGH", "liveness_control": "HIGH", "spoofing_control": "NORMAL",
-	})
-	requestURL := strings.TrimRight(config.FaceRecognitionEndpoint, "/") + "/rest/2.0/face/v3/person/verify?access_token=" + url.QueryEscape(token)
-	request, _ := http.NewRequest(http.MethodPost, requestURL, strings.NewReader(string(body)))
-	request.Header.Set("Content-Type", "application/json")
-	result, err := http.DefaultClient.Do(request)
-	if err != nil || result == nil {
-		response.ReturnError(c, response.UNAVAILABLE, "调用百度云人脸实名认证失败")
-		return
-	}
-	defer result.Body.Close()
-	var verification struct {
-		ErrorCode int    `json:"error_code"`
-		ErrorMsg  string `json:"error_msg"`
-		Result    struct {
-			Score float64 `json:"score"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(result.Body).Decode(&verification); err != nil || verification.ErrorCode != 0 {
-		response.ReturnError(c, response.UNAVAILABLE, "百度云实名认证失败: "+verification.ErrorMsg)
-		return
-	}
-	passed := verification.Result.Score >= config.FaceRecognitionScoreThreshold
-	status, remark := verificationPending, fmt.Sprintf("人脸相似度 %.2f，未达到认证阈值", verification.Result.Score)
-	if passed {
-		status, remark = system.StatusEnabled, ""
-	}
-	if err := pgdb.GetClient().Model(&item).Updates(map[string]any{"verification_certify_id": fmt.Sprintf("baidu:%.2f", verification.Result.Score), "verified": status, "verification_remark": remark}).Error; err != nil {
-		response.ReturnError(c, response.DATA_LOSS, "保存认证结果失败")
-		return
-	}
-	response.ReturnData(c, gin.H{"passed": passed, "verified": status, "score": verification.Result.Score})
+	response.ReturnError(c, response.FAILED_PRECONDITION, "当前使用正脸照片采集和人工审核，请更新客户端后提交材料")
 }
 
 func ConfirmFaceVerification(c *gin.Context) {
-	item, ok := currentVerificationCustomer(c)
-	if !ok {
-		return
-	}
-	if item.VerificationCertifyID == "" {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "尚未发起人脸核身")
-		return
-	}
-	if !strings.HasPrefix(item.VerificationCertifyID, "baidu:") {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "认证任务不是百度云认证任务")
-		return
-	}
-	response.ReturnData(c, gin.H{"passed": item.Verified == system.StatusEnabled, "verified": item.Verified})
+	response.ReturnError(c, response.FAILED_PRECONDITION, "正脸采集不等于实名核验，认证结果请以后台人工审核为准")
 }
 
 func currentVerificationCustomer(c *gin.Context) (system.Customer, bool) {

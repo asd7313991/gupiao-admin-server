@@ -20,6 +20,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 func ListPositions(c *gin.Context) {
@@ -143,17 +144,14 @@ func parseLivePositionQuotes(body string) map[string]float64 {
 }
 
 func refreshPositionMarketValues(position *system.TradePosition, price float64) {
-	leverage := position.Leverage
-	if leverage < 1 {
-		leverage = 1
-	}
 	totalCost := position.TotalCost
 	if totalCost <= 0 {
 		totalCost = position.PositionQty * position.CostPrice
 	}
 	position.CurrentPrice = price
-	position.MarketValue = roundPositionMoney(position.PositionQty * price * leverage)
-	position.ProfitLoss = roundPositionMoney((position.PositionQty*price - totalCost) * leverage)
+	valued := *position
+	valued.TotalCost = totalCost
+	position.MarketValue, position.ProfitLoss, position.ProfitRate = positionbasis.Values(valued, price)
 	position.ProfitRate = 0
 	if totalCost > 0 {
 		position.ProfitRate = roundPositionMoney(position.ProfitLoss / totalCost * 100)
@@ -221,9 +219,18 @@ func SavePosition(c *gin.Context) {
 	if input.Leverage < 1 {
 		input.Leverage = 5
 	}
-	input.TradePosition.Margin = input.TotalCost
-	input.TradePosition.MarketValue = input.PositionQty * input.CurrentPrice * input.Leverage
-	input.TradePosition.ProfitLoss = (input.PositionQty*input.CurrentPrice - input.TotalCost) * input.Leverage
+	if input.ID == 0 {
+		input.QuantityBasis = positionbasis.Actual
+	} else {
+		var existing system.TradePosition
+		if err := pgdb.GetClient().First(&existing, input.ID).Error; err != nil {
+			response.ReturnError(c, response.NOT_FOUND, "持仓不存在")
+			return
+		}
+		input.QuantityBasis = existing.QuantityBasis
+	}
+	input.TradePosition.Margin = positionbasis.BuyMargin(input.TotalCost, input.Leverage, input.QuantityBasis)
+	input.TradePosition.MarketValue, input.TradePosition.ProfitLoss, input.TradePosition.ProfitRate = positionbasis.Values(input.TradePosition, input.CurrentPrice)
 	if input.TradePosition.TotalCost != 0 {
 		input.TradePosition.ProfitRate = input.ProfitLoss / input.TotalCost * 100
 	}
@@ -360,7 +367,7 @@ func ForceClosePosition(c *gin.Context) {
 			Updates(map[string]any{"status": "cancelled", "cancelled_at": closedAt, "frozen_quantity": 0}).Error; err != nil {
 			return err
 		}
-		record := system.TradeRecord{CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: quantity, Amount: amount, Remark: "后台按当前价格强平", TradeAt: closedAt}
+		record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionbasis.Leverage(position), CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: quantity, Amount: amount, Remark: "后台按当前价格强平", TradeAt: closedAt}
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}
@@ -404,12 +411,8 @@ func ForceClosePosition(c *gin.Context) {
 }
 
 func calculateForceCloseSettlement(position system.TradePosition, price float64) (amount, realized, settlement float64) {
-	leverage := position.Leverage
-	if leverage < 1 {
-		leverage = 1
-	}
 	amount = roundPositionMoney(price * position.PositionQty)
-	realized = roundPositionMoney((amount - position.TotalCost) * leverage)
+	realized = roundPositionMoney((amount - position.TotalCost) * positionbasis.Multiplier(position))
 	settlement = roundPositionMoney(position.Margin + realized)
 	return amount, realized, settlement
 }

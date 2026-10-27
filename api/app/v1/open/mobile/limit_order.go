@@ -18,6 +18,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 const (
@@ -34,6 +35,8 @@ type limitOrderInput struct {
 }
 
 type limitOrderView struct {
+	QuantityBasis uint    `json:"quantity_basis"`
+	Leverage      float64 `json:"leverage"`
 	ID            uint    `json:"id"`
 	Code          string  `json:"code"`
 	Symbol        string  `json:"symbol"`
@@ -98,54 +101,7 @@ func PlaceLimitOrder(c *gin.Context) {
 		return
 	}
 
-	var order system.LimitOrder
-	var rejection string
-	err = pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
-		var customer system.Customer
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, middleware.GetCurrentCustomerID(c)).Error; err != nil {
-			return err
-		}
-		if customer.Status != system.StatusEnabled || customer.FundStatus != system.StatusEnabled || customer.Verified != system.StatusEnabled {
-			rejection = "账户未完成认证或当前不可交易"
-			return errTradeRejected
-		}
-		order = system.LimitOrder{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
-		if input.Direction == "买入" {
-			securityAtPrice := security
-			securityAtPrice.LastPrice = input.LimitPrice
-			amount, _, _, _, _, fee := calculateTradeFees(securityAtPrice, input.Quantity, input.Direction, settings)
-			order.FrozenAmount = roundMoney(amount + fee)
-			if customer.Balance < order.FrozenAmount {
-				rejection = fmt.Sprintf("可用余额不足，还需 %.2f 元", order.FrozenAmount-customer.Balance)
-				return errTradeRejected
-			}
-			customer.Balance = roundMoney(customer.Balance - order.FrozenAmount)
-			customer.FrozenBalance = roundMoney(customer.FrozenBalance + order.FrozenAmount)
-			if err := tx.Save(&customer).Error; err != nil {
-				return err
-			}
-		} else {
-			var position system.TradePosition
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error; err != nil {
-				rejection = "没有可卖持仓"
-				return errTradeRejected
-			}
-			if position.AvailableQty < input.Quantity {
-				rejection = "可卖持仓不足"
-				return errTradeRejected
-			}
-			if input.Quantity != position.PositionQty && math.Mod(input.Quantity, 100) != 0 {
-				rejection = "非全部卖出时，数量须为 100 股的整数倍"
-				return errTradeRejected
-			}
-			position.AvailableQty -= input.Quantity
-			order.FrozenQuantity = input.Quantity
-			if err := tx.Save(&position).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Create(&order).Error
-	})
+	order, rejection, err := placeAStockLimitOrderDB(pgdb.GetClient(), middleware.GetCurrentCustomerID(c), security, input, settings)
 	if errors.Is(err, errTradeRejected) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, rejection)
 		return
@@ -159,6 +115,72 @@ func PlaceLimitOrder(c *gin.Context) {
 		_ = pgdb.GetClient().First(&order, order.ID).Error
 	}
 	response.ReturnData(c, toLimitOrderView(order))
+}
+
+func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.StockSecurity, input limitOrderInput, settings mobileTradeSettings) (system.LimitOrder, string, error) {
+	var order system.LimitOrder
+	var rejection string
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var customer system.Customer
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, customerID).Error; err != nil {
+			return err
+		}
+		if customer.Status != system.StatusEnabled || customer.FundStatus != system.StatusEnabled || customer.Verified != system.StatusEnabled {
+			rejection = "账户未完成认证或当前不可交易"
+			return errTradeRejected
+		}
+		order = system.LimitOrder{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
+		if input.Direction == "买入" {
+			order.QuantityBasis, order.Leverage = positionbasis.Actual, effectiveLeverage(settings)
+			var existing system.TradePosition
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&existing).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if err == nil && existing.PositionQty > 0 {
+				order.QuantityBasis, order.Leverage = existing.QuantityBasis, positionLeverage(existing)
+			}
+			securityAtPrice := security
+			securityAtPrice.LastPrice = input.LimitPrice
+			amount, _, _, _, _, fee := calculateTradeFees(securityAtPrice, input.Quantity, input.Direction, settings)
+			order.FrozenAmount = roundMoney(positionbasis.BuyMargin(amount, order.Leverage, order.QuantityBasis) + fee)
+			if customer.Balance < order.FrozenAmount {
+				rejection = fmt.Sprintf("可用余额不足，还需 %.2f 元", order.FrozenAmount-customer.Balance)
+				return errTradeRejected
+			}
+			customer.Balance = roundMoney(customer.Balance - order.FrozenAmount)
+			customer.FrozenBalance = roundMoney(customer.FrozenBalance + order.FrozenAmount)
+			if err := tx.Save(&customer).Error; err != nil {
+				return err
+			}
+		} else {
+			var position system.TradePosition
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return err
+				}
+				rejection = "没有可卖持仓"
+				return errTradeRejected
+			}
+			if position.AvailableQty < input.Quantity {
+				rejection = "可卖持仓不足"
+				return errTradeRejected
+			}
+			if input.Quantity != position.PositionQty && math.Mod(input.Quantity, 100) != 0 {
+				rejection = "非全部卖出时，数量须为 100 股的整数倍"
+				return errTradeRejected
+			}
+			position.AvailableQty -= input.Quantity
+			order.QuantityBasis, order.Leverage = position.QuantityBasis, positionLeverage(position)
+			order.FrozenQuantity = input.Quantity
+			if err := tx.Save(&position).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(&order).Error
+	})
+	return order, rejection, err
 }
 
 func ListLimitOrders(c *gin.Context) {
@@ -296,56 +318,64 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 		if err := tx.Where("symbol = ? AND status = ?", order.Symbol, system.StatusEnabled).First(&security).Error; err != nil {
 			return err
 		}
-		matchPrice, matched := limitOrderMatchPrice(order, security)
-		if !matched {
+		matchPrice, executable := limitOrderMatchPrice(order, security)
+		if !executable {
 			return nil
 		}
 		security.LastPrice = matchPrice
-		tradeInput := orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}
-		if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
-			if err := releaseLimitOrderFreeze(tx, &order); err != nil {
-				return err
-			}
-			order.Status, order.CancelledAt = limitOrderCancelled, time.Now().Unix()
-			return tx.Save(&order).Error
-		}
-		var customer system.Customer
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, order.CustomerID).Error; err != nil {
-			return err
-		}
-		if order.Direction == "买入" {
-			if customer.FrozenBalance < order.FrozenAmount {
-				return fmt.Errorf("冻结资金不足")
-			}
-			customer.FrozenBalance = roundMoney(customer.FrozenBalance - order.FrozenAmount)
-			customer.Balance = roundMoney(customer.Balance + order.FrozenAmount)
-		} else {
-			var position system.TradePosition
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, order.Symbol).First(&position).Error; err != nil {
-				return err
-			}
-			position.AvailableQty += order.FrozenQuantity
-			if err := tx.Save(&position).Error; err != nil {
-				return err
-			}
-		}
-		var result orderResult
-		var rejection string
-		if err := executeMobileOrder(tx, &customer, security, tradeInput, settings, &result, &rejection); err != nil {
-			return err
-		}
-		if err := tx.Model(&system.TradeRecord{}).Where("id = ?", result.RecordID).Update("remark", "限价委托自动成交").Error; err != nil {
-			return err
-		}
-		order.Status, order.ExecutedPrice, order.TradeRecordID, order.FilledAt = limitOrderFilled, result.Price, result.RecordID, result.ExecutedAt
-		order.FrozenAmount, order.FrozenQuantity = 0, 0
-		if err := tx.Save(&order).Error; err != nil {
-			return err
-		}
-		matched = true
-		return nil
+		filled, err := fillAStockLimitOrder(tx, &order, security, settings)
+		matched = filled
+		return err
 	})
 	return matched, err
+}
+
+func fillAStockLimitOrder(tx *gorm.DB, order *system.LimitOrder, security system.StockSecurity, settings mobileTradeSettings) (bool, error) {
+	tradeInput := orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}
+	if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
+		if err := releaseLimitOrderFreeze(tx, order); err != nil {
+			return false, err
+		}
+		order.Status, order.CancelledAt = limitOrderCancelled, time.Now().Unix()
+		return false, tx.Save(order).Error
+	}
+	var customer system.Customer
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, order.CustomerID).Error; err != nil {
+		return false, err
+	}
+	if order.Direction == "买入" {
+		if customer.FrozenBalance < order.FrozenAmount {
+			return false, fmt.Errorf("冻结资金不足")
+		}
+		customer.FrozenBalance = roundMoney(customer.FrozenBalance - order.FrozenAmount)
+		customer.Balance = roundMoney(customer.Balance + order.FrozenAmount)
+	} else {
+		var position system.TradePosition
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, order.Symbol).First(&position).Error; err != nil {
+			return false, err
+		}
+		position.AvailableQty += order.FrozenQuantity
+		if err := tx.Save(&position).Error; err != nil {
+			return false, err
+		}
+	}
+	var result orderResult
+	var rejection string
+	if err := executeMobileOrder(tx, &customer, security, tradeInput, settings, &result, &rejection, *order); err != nil {
+		if errors.Is(err, errTradeRejected) {
+			return false, fmt.Errorf("%s: %w", rejection, err)
+		}
+		return false, err
+	}
+	if err := tx.Model(&system.TradeRecord{}).Where("id = ?", result.RecordID).Update("remark", "限价委托自动成交").Error; err != nil {
+		return false, err
+	}
+	order.Status, order.ExecutedPrice, order.TradeRecordID, order.FilledAt = limitOrderFilled, result.Price, result.RecordID, result.ExecutedAt
+	order.FrozenAmount, order.FrozenQuantity = 0, 0
+	if err := tx.Save(order).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func limitOrderMatchPrice(order system.LimitOrder, security system.StockSecurity) (float64, bool) {
@@ -418,5 +448,5 @@ func toLimitOrderView(order system.LimitOrder) limitOrderView {
 			note = "按有效买卖盘口模拟成交，交易时段限制由后台全天交易开关控制；无盘口、零挂量、过期行情或未达限价时继续等待，可撤单解冻"
 		}
 	}
-	return limitOrderView{ID: order.ID, Code: code, Symbol: order.Symbol, StockName: order.StockName, Direction: order.Direction, LimitPrice: order.LimitPrice, Quantity: order.Quantity, Status: order.Status, StatusLabel: labels[order.Status], FrozenAmount: order.FrozenAmount, ExecutedPrice: order.ExecutedPrice, CreatedAt: order.CreatedAt.Unix(), FilledAt: order.FilledAt, CancelledAt: order.CancelledAt, Currency: currency, QuoteAt: order.QuoteAt, MatchingNote: note}
+	return limitOrderView{QuantityBasis: order.QuantityBasis, Leverage: order.Leverage, ID: order.ID, Code: code, Symbol: order.Symbol, StockName: order.StockName, Direction: order.Direction, LimitPrice: order.LimitPrice, Quantity: order.Quantity, Status: order.Status, StatusLabel: labels[order.Status], FrozenAmount: order.FrozenAmount, ExecutedPrice: order.ExecutedPrice, CreatedAt: order.CreatedAt.Unix(), FilledAt: order.FilledAt, CancelledAt: order.CancelledAt, Currency: currency, QuoteAt: order.QuoteAt, MatchingNote: note}
 }

@@ -28,8 +28,8 @@ func TestHoldingViewExcludesValuation(t *testing.T) {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		t.Fatal(err)
 	}
-	if len(fields) != 7 {
-		t.Fatalf("基础持仓只能返回七个账本字段：%s", body)
+	if len(fields) != 8 {
+		t.Fatalf("基础持仓只返回八个账本字段（含数量口径）：%s", body)
 	}
 	for _, key := range []string{"current_price", "market_value", "profit_loss", "quote_at", "cost_price", "margin"} {
 		if _, exists := fields[key]; exists {

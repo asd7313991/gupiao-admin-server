@@ -28,6 +28,7 @@ func InitCronJobs() {
 	InitStockSyncJob()
 	InitHongKongQuoteJob()
 	InitHongKongDiscoveryJob()
+	InitExchangeRateJob()
 	InitPriorityQuoteJob()
 	InitNewsCollectJob()
 	InitLimitOrderMatchJob()

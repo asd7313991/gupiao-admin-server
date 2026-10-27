@@ -11,6 +11,7 @@ import (
 
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 func ProcessDailyManagementFees(now time.Time) (processed int, forced int, err error) {
@@ -106,7 +107,7 @@ func currentPositionsMarketValue(tx *gorm.DB, positions []system.TradePosition) 
 			price = security.LastPrice
 		}
 		position.CurrentPrice = price
-		position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, price, position.TotalCost, positionLeverage(*position))
+		position.MarketValue, position.ProfitLoss, position.ProfitRate = positionbasis.Values(*position, price)
 		total += position.MarketValue
 	}
 	return roundMoney(total)
@@ -153,14 +154,14 @@ func forceCloseAllPositions(tx *gorm.DB, customer *system.Customer, positions []
 			price = security.LastPrice
 		}
 		amount := roundMoney(price * position.PositionQty)
-		realized := roundMoney((amount - position.TotalCost) * positionLeverage(*position))
+		realized := roundMoney((amount - position.TotalCost) * positionbasis.Multiplier(*position))
 		customer.Balance = roundMoney(customer.Balance + position.Margin + realized)
 		if realized >= 0 {
 			customer.TotalProfit = roundMoney(customer.TotalProfit + realized)
 		} else {
 			customer.TotalLoss = roundMoney(customer.TotalLoss - realized)
 		}
-		record := system.TradeRecord{CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: position.PositionQty, Amount: amount, Remark: reason, TradeAt: closedAt}
+		record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(*position), CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: position.PositionQty, Amount: amount, Remark: reason, TradeAt: closedAt}
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}

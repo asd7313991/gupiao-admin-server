@@ -320,6 +320,10 @@ func ReviewVerification(c *gin.Context) {
 			response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面后再审核通过")
 			return
 		}
+		if !isVerificationMaterial(customer.VerificationVideo) {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传认证视频后再审核通过")
+			return
+		}
 	}
 	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", input.ID).Updates(map[string]any{"verified": input.Verified, "verification_remark": input.Remark}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "认证审核失败")
@@ -349,6 +353,10 @@ func BatchReviewVerification(c *gin.Context) {
 	for _, customer := range customers {
 		if !hasIdentityMaterials(customer) {
 			response.ReturnError(c, response.FAILED_PRECONDITION, "所选客户中存在未上传身份证正反面的资料，无法批量通过")
+			return
+		}
+		if !isVerificationMaterial(customer.VerificationVideo) {
+			response.ReturnError(c, response.FAILED_PRECONDITION, "所选客户中存在未上传认证视频的资料，无法批量通过")
 			return
 		}
 	}

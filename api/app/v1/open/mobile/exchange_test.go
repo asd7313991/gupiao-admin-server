@@ -41,14 +41,3 @@ func TestExchangeReceived(t *testing.T) {
 		})
 	}
 }
-
-func TestExchangeRateConfig(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"links":{"hkdRate":0}}`, `{"links":{"hkdRate":null}}`, `{"links":{"hkdRate":"0.89"}}`, `broken`} {
-		if _, err := exchangeRateFromConfig(raw); err == nil {
-			t.Fatalf("应拒绝无效配置: %s", raw)
-		}
-	}
-	if rate, err := exchangeRateFromConfig(`{"links":{"hkdRate":0.89}}`); err != nil || rate != 0.89 {
-		t.Fatalf("rate=%v err=%v", rate, err)
-	}
-}

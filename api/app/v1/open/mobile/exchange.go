@@ -1,12 +1,12 @@
 package mobile
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"regexp"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -17,6 +17,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/exchangerate"
 )
 
 type exchangeInput struct {
@@ -34,16 +35,7 @@ type exchangeRejection string
 func (err exchangeRejection) Error() string { return string(err) }
 
 func validExchangeRate(rate float64) bool {
-	return !math.IsNaN(rate) && !math.IsInf(rate, 0) && rate >= 0.00000001 && rate <= 100 &&
-		math.Abs(rate*1e8-math.Round(rate*1e8)) < 0.000001
-}
-
-func exchangeRateFromConfig(config string) (float64, error) {
-	var settings mobileTradeSettings
-	if err := json.Unmarshal([]byte(config), &settings); err != nil || !validExchangeRate(settings.Links.HKDRate) {
-		return 0, fmt.Errorf("港币汇率未正确配置，请联系管理员")
-	}
-	return settings.Links.HKDRate, nil
+	return exchangerate.Valid(rate)
 }
 
 func exchangeReceived(amount, rate float64, from string) (float64, error) {
@@ -77,24 +69,21 @@ func exchangeReceived(amount, rate float64, from string) (float64, error) {
 }
 
 func ExchangeSummary(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	customer, ok := currentVerificationCustomer(c)
 	if !ok {
 		return
 	}
-	var row system.AppSystemSetting
-	if err := pgdb.GetClient().First(&row).Error; err != nil {
-		zap.L().Error("读取兑换配置失败", zap.Error(err))
-		response.ReturnError(c, response.DATA_LOSS, "读取兑换配置失败")
-		return
-	}
-	rate, err := exchangeRateFromConfig(row.Config)
+	row, err := exchangerate.Load(pgdb.GetClient(), time.Now())
 	if err != nil {
+		zap.L().Warn("每日港币汇率不可用", zap.Error(err))
 		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
 		return
 	}
 	response.ReturnData(c, gin.H{
 		"cny_balance": customer.Balance, "hkd_balance": customer.HKDBalance,
-		"rate": rate, "rate_updated_at": row.UpdatedAt.Unix(),
+		"rate": row.Rate, "rate_updated_at": row.FetchedAt, "rate_date": row.RateDate,
+		"rate_source": row.Source, "rate_carried_forward": row.RateDate != time.Now().In(exchangerate.Location).Format(time.DateOnly),
 		"has_trade_pin": customer.TradePassword != "",
 	})
 }
@@ -155,23 +144,21 @@ func executeCurrencyExchange(tx *gorm.DB, customerID uint, input exchangeInput) 
 	if !errors.Is(found, gorm.ErrRecordNotFound) {
 		return record, found
 	}
-	var setting system.AppSystemSetting
-	if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&setting).Error; err != nil {
-		return record, err
-	}
-	rate, err := exchangeRateFromConfig(setting.Config)
+	row, err := exchangerate.Load(tx.Clauses(clause.Locking{Strength: "SHARE"}), time.Now())
 	if err != nil {
+		zap.L().Warn("兑换使用的每日港币汇率不可用", zap.Error(err))
 		return record, exchangeRejection(err.Error())
 	}
-	if input.Rate != rate {
+	if input.Rate != row.Rate {
 		return record, exchangeRejection("汇率已更新，请刷新汇率后重新确认")
 	}
-	return applyCurrencyExchange(tx, &customer, input, rate)
+	return applyCurrencyExchange(tx, &customer, input, row)
 }
 
 var errInsufficientExchangeBalance = errors.New("可兑换余额不足")
 
-func applyCurrencyExchange(tx *gorm.DB, customer *system.Customer, input exchangeInput, rate float64) (system.CurrencyExchange, error) {
+func applyCurrencyExchange(tx *gorm.DB, customer *system.Customer, input exchangeInput, reference system.CurrencyReferenceRate) (system.CurrencyExchange, error) {
+	rate := reference.Rate
 	received, err := exchangeReceived(input.Amount, rate, input.From)
 	if err != nil {
 		return system.CurrencyExchange{}, err
@@ -185,14 +172,15 @@ func applyCurrencyExchange(tx *gorm.DB, customer *system.Customer, input exchang
 	}
 	*fromBalance, *toBalance = roundMoney(*fromBalance-input.Amount), roundMoney(*toBalance+received)
 	record := system.CurrencyExchange{CustomerID: customer.ID, RequestID: input.RequestID, From: input.From, To: to,
-		Amount: input.Amount, Received: received, Rate: rate, CNYBalance: customer.Balance, HKDBalance: customer.HKDBalance}
+		Amount: input.Amount, Received: received, Rate: rate, RateDate: reference.RateDate, RateSource: reference.Source,
+		CNYBalance: customer.Balance, HKDBalance: customer.HKDBalance}
 	if err := tx.Model(customer).Updates(map[string]any{"balance": customer.Balance, "hkd_balance": customer.HKDBalance}).Error; err != nil {
 		return record, err
 	}
 	if err := tx.Create(&record).Error; err != nil {
 		return record, err
 	}
-	remark := fmt.Sprintf("兑换编号 %s：%.2f %s → %.2f %s；1 HKD = %.8f CNY", input.RequestID, input.Amount, input.From, received, to, rate)
+	remark := fmt.Sprintf("兑换编号 %s：%.2f %s → %.2f %s；1 HKD = %.8f CNY；汇率日期%s，来源%s", input.RequestID, input.Amount, input.From, received, to, rate, reference.RateDate, reference.Source)
 	flows := []system.CustomerFundRecord{
 		{CustomerID: customer.ID, Type: "资金兑换", Direction: "扣款", Currency: input.From, Amount: -input.Amount, Balance: *fromBalance, Remark: remark},
 		{CustomerID: customer.ID, Type: "资金兑换", Direction: "入账", Currency: to, Amount: received, Balance: *toBalance, Remark: remark},

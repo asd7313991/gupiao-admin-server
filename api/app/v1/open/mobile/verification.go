@@ -282,8 +282,8 @@ func SaveVerificationIdentity(c *gin.Context) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "请输入正确的姓名和身份证号")
 		return
 	}
-	if customer.IDCardFront == "" || customer.IDCardBack == "" {
-		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面")
+	if err := validateVerificationMaterials(customer); err != nil {
+		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
 		return
 	}
 	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
@@ -291,6 +291,16 @@ func SaveVerificationIdentity(c *gin.Context) {
 		return
 	}
 	response.ReturnData(c, nil)
+}
+
+func validateVerificationMaterials(customer system.Customer) error {
+	if customer.IDCardFront == "" || customer.IDCardBack == "" {
+		return fmt.Errorf("请先上传身份证正反面")
+	}
+	if strings.TrimSpace(customer.VerificationVideo) == "" {
+		return fmt.Errorf("请先上传认证视频")
+	}
+	return nil
 }
 
 func UpdateVerificationBankCard(c *gin.Context) {
@@ -409,6 +419,10 @@ func StartFaceVerification(c *gin.Context) {
 	}
 	if item.Name == "" || item.IDCard == "" || item.IDCardFront == "" || item.IDCardBack == "" {
 		response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面并完成身份信息提取")
+		return
+	}
+	if err := validateVerificationMaterials(item); err != nil {
+		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
 		return
 	}
 	file, err := c.FormFile("file")

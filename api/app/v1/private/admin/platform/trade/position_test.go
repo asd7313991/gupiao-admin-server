@@ -21,6 +21,18 @@ func TestCalculateForceCloseSettlement(t *testing.T) {
 	}
 }
 
+func TestActualPositionSettlementAndValuation(t *testing.T) {
+	position := system.TradePosition{QuantityBasis: 1, PositionQty: 1000, TotalCost: 10000, Margin: 2000, Leverage: 5}
+	amount, realized, settlement := calculateForceCloseSettlement(position, 11)
+	if amount != 11000 || realized != 1000 || settlement != 3000 {
+		t.Fatalf("实际股数强平%v/%v/%v", amount, realized, settlement)
+	}
+	refreshPositionMarketValues(&position, 11)
+	if position.MarketValue != 11000 || position.ProfitLoss != 1000 || position.ProfitRate != 10 {
+		t.Fatalf("后台与客户端口径须一致%+v", position)
+	}
+}
+
 func TestRefreshPositionMarketValues(t *testing.T) {
 	position := system.TradePosition{PositionQty: 40000, CostPrice: 6.78, TotalCost: 271200, Leverage: 5}
 

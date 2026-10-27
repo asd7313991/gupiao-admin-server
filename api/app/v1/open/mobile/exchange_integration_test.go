@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"api-server/db/pgdb/system"
+	"api-server/util/exchangerate"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -47,7 +48,7 @@ func TestCurrencyExchangeIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	if err := db.AutoMigrate(&system.Customer{}, &system.CustomerFundRecord{}, &system.CurrencyExchange{}, &system.AppSystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&system.Customer{}, &system.CustomerFundRecord{}, &system.CurrencyExchange{}, &system.AppSystemSetting{}, &system.CurrencyReferenceRate{}); err != nil {
 		t.Fatal(err)
 	}
 	hash, err := system.HashPassword("123456")
@@ -62,6 +63,20 @@ func TestCurrencyExchangeIntegration(t *testing.T) {
 	config := system.AppSystemSetting{Config: `{"links":{"hkdRate":0.89}}`}
 	if err := db.Create(&config).Error; err != nil {
 		t.Fatal(err)
+	}
+	now := time.Now()
+	reference := system.CurrencyReferenceRate{Pair: exchangerate.Pair, Rate: 0.89,
+		RateDate: exchangerate.ExpectedDate(now), Source: exchangerate.Source, FetchedAt: now.Unix()}
+	if err := db.Create(&reference).Error; err != nil {
+		t.Fatal(err)
+	}
+	older := reference
+	older.Rate, older.FetchedAt = 0.88, reference.FetchedAt-10
+	if err := exchangerate.Save(db, older, now); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := exchangerate.Load(db, now); err != nil || loaded.Rate != 0.89 {
+		t.Fatalf("晚到的旧任务不得覆盖已同步汇率: %+v err=%v", loaded, err)
 	}
 	input := exchangeInput{RequestID: "exchange-request-0001", From: "CNY", Amount: 100, Rate: 0.89, TradePIN: "123456"}
 	run := func(input exchangeInput) (system.CurrencyExchange, error) {
@@ -105,6 +120,10 @@ func TestCurrencyExchangeIntegration(t *testing.T) {
 		}
 	}
 	assertBalances(900, 112.35, 1, 2)
+	var receipt system.CurrencyExchange
+	if err := db.First(&receipt).Error; err != nil || receipt.RateDate != reference.RateDate || receipt.RateSource != reference.Source {
+		t.Fatalf("成交必须保存汇率日期和来源：%+v err=%v", receipt, err)
+	}
 	var ledger []system.CustomerFundRecord
 	if err := db.Order("id").Find(&ledger).Error; err != nil {
 		t.Fatal(err)
@@ -192,10 +211,23 @@ func TestCurrencyExchangeIntegration(t *testing.T) {
 	if err := db.Model(&config).Update("config", `{"links":{"hkdRate":0}}`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(exchangeInput{"exchange-request-invalid-rate", "CNY", 100, 0.89, "123456"}); err == nil {
-		t.Fatal("未配置汇率应拒绝")
+	if _, err := run(exchangeInput{"exchange-request-manual-ignored", "CNY", 1000, 0.89, "123456"}); !errors.Is(err, errInsufficientExchangeBalance) {
+		t.Fatalf("人工汇率不得参与自动兑换检查: %v", err)
 	}
-	// 已完成请求即使后台改了汇率仍返回原成交结果，不会再次扣款。
+	if err := db.Model(&reference).Update("rate_date", now.AddDate(0, 0, -20).Format(time.DateOnly)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(exchangeInput{"exchange-request-invalid-rate", "CNY", 100, 0.89, "123456"}); err == nil {
+		t.Fatal("未达到应公布日期的汇率必须拒绝新兑换")
+	}
+	reference.Rate, reference.RateDate, reference.FetchedAt = 0.90, exchangerate.ExpectedDate(time.Now()), time.Now().Unix()
+	if err := exchangerate.Save(db, reference, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(exchangeInput{"exchange-request-changed-rate", "CNY", 100, 0.89, "123456"}); err == nil {
+		t.Fatal("同步汇率变化后必须拒绝客户端旧汇率")
+	}
+	// 已完成请求即使当前汇率变化仍返回原成交结果，不会再次扣款。
 	if row, err := run(input); err != nil || row.Rate != 0.89 || row.Received != 112.35 {
 		t.Fatalf("幂等重放 %+v err=%v", row, err)
 	}

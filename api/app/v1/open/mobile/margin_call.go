@@ -10,6 +10,7 @@ import (
 
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 type marginCallRequirement struct {
@@ -128,7 +129,7 @@ func refreshPositionMarketValue(tx *gorm.DB, position *system.TradePosition) {
 		price = security.LastPrice
 	}
 	position.CurrentPrice = price
-	position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, price, position.TotalCost, positionLeverage(*position))
+	position.MarketValue, position.ProfitLoss, position.ProfitRate = positionbasis.Values(*position, price)
 }
 
 func positionPriceDropRate(position system.TradePosition) float64 {

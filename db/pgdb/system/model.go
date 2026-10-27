@@ -173,8 +173,19 @@ type CurrencyExchange struct {
 	Amount     float64 `json:"amount"`
 	Received   float64 `json:"received"`
 	Rate       float64 `json:"rate"`
+	RateDate   string  `json:"rate_date" gorm:"size:10"`
+	RateSource string  `json:"rate_source"`
 	CNYBalance float64 `json:"cny_balance"`
 	HKDBalance float64 `json:"hkd_balance"`
+}
+
+// CurrencyReferenceRate 保存每日公布的参考汇率，与人工系统配置分开。
+type CurrencyReferenceRate struct {
+	Pair      string  `json:"pair" gorm:"primaryKey;size:16"`
+	Rate      float64 `json:"rate" gorm:"not null"`
+	RateDate  string  `json:"rate_date" gorm:"size:10;not null"`
+	Source    string  `json:"source" gorm:"not null"`
+	FetchedAt int64   `json:"fetched_at" gorm:"not null"`
 }
 
 // DailyManagementFee 记录每日持仓管理费，客户与计费日期唯一以避免重复扣款。
@@ -239,6 +250,7 @@ type CustomerDevice struct {
 // TradePosition 保存客户证券持仓与成本、盈亏数据。
 type TradePosition struct {
 	gorm.Model
+	QuantityBasis   uint    `json:"quantity_basis" gorm:"not null;default:0"`
 	CustomerID      uint    `json:"customer_id" gorm:"index;not null"`
 	Symbol          string  `json:"symbol" gorm:"index"`
 	StockName       string  `json:"stock_name"`
@@ -258,6 +270,15 @@ type TradePosition struct {
 	BuyAt           int64   `json:"buy_at"`
 }
 
+// PositionBasisConversion 保存经批准的持仓口径转换前后快照。
+type PositionBasisConversion struct {
+	PositionID   uint   `gorm:"primaryKey"`
+	Batch        string `gorm:"not null"`
+	BeforeRecord string `gorm:"type:text;not null"`
+	AfterRecord  string `gorm:"type:text;not null"`
+	ConvertedAt  int64  `gorm:"not null"`
+}
+
 // HongKongTradeRequest 保存模拟成交回执，避免网络重试重复扣款。
 type HongKongTradeRequest struct {
 	gorm.Model
@@ -272,24 +293,28 @@ type HongKongTradeRequest struct {
 // TradeRecord 保存买入、卖出等成交记录；常用筛选字段均建索引。
 type TradeRecord struct {
 	gorm.Model
-	CustomerID  uint    `json:"customer_id" gorm:"index:idx_trade_record_customer_time;not null"`
-	Symbol      string  `json:"symbol" gorm:"index:idx_trade_record_symbol_time"`
-	StockName   string  `json:"stock_name"`
-	Currency    string  `json:"currency"`
-	Direction   string  `json:"direction" gorm:"index:idx_trade_record_direction_time"`
-	TradePrice  float64 `json:"trade_price"`
-	Quantity    float64 `json:"quantity"`
-	Amount      float64 `json:"amount"`
-	StampDuty   float64 `json:"stamp_duty"`
-	TransferFee float64 `json:"transfer_fee"`
-	Commission  float64 `json:"commission"`
-	Remark      string  `json:"remark"`
-	TradeAt     int64   `json:"trade_at" gorm:"index:idx_trade_record_time"`
+	QuantityBasis uint    `json:"quantity_basis" gorm:"not null;default:0"`
+	Leverage      float64 `json:"leverage" gorm:"not null;default:1"`
+	CustomerID    uint    `json:"customer_id" gorm:"index:idx_trade_record_customer_time;not null"`
+	Symbol        string  `json:"symbol" gorm:"index:idx_trade_record_symbol_time"`
+	StockName     string  `json:"stock_name"`
+	Currency      string  `json:"currency"`
+	Direction     string  `json:"direction" gorm:"index:idx_trade_record_direction_time"`
+	TradePrice    float64 `json:"trade_price"`
+	Quantity      float64 `json:"quantity"`
+	Amount        float64 `json:"amount"`
+	StampDuty     float64 `json:"stamp_duty"`
+	TransferFee   float64 `json:"transfer_fee"`
+	Commission    float64 `json:"commission"`
+	Remark        string  `json:"remark"`
+	TradeAt       int64   `json:"trade_at" gorm:"index:idx_trade_record_time"`
 }
 
 // LimitOrder 保存客户限价委托及对应冻结资金或持仓。
 type LimitOrder struct {
 	gorm.Model
+	QuantityBasis  uint    `json:"quantity_basis" gorm:"not null;default:0"`
+	Leverage       float64 `json:"leverage" gorm:"not null;default:0"`
 	CustomerID     uint    `json:"customer_id" gorm:"index:idx_limit_order_customer_status;uniqueIndex:idx_limit_order_request;not null"`
 	RequestID      *string `json:"request_id,omitempty" gorm:"size:64;uniqueIndex:idx_limit_order_request"`
 	Symbol         string  `json:"symbol" gorm:"index:idx_limit_order_symbol_status;not null"`

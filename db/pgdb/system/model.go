@@ -295,21 +295,23 @@ type HongKongTradeRequest struct {
 // TradeRecord 保存买入、卖出等成交记录；常用筛选字段均建索引。
 type TradeRecord struct {
 	gorm.Model
-	QuantityBasis uint    `json:"quantity_basis" gorm:"not null;default:0"`
-	Leverage      float64 `json:"leverage" gorm:"not null;default:1"`
-	CustomerID    uint    `json:"customer_id" gorm:"index:idx_trade_record_customer_time;not null"`
-	Symbol        string  `json:"symbol" gorm:"index:idx_trade_record_symbol_time"`
-	StockName     string  `json:"stock_name"`
-	Currency      string  `json:"currency"`
-	Direction     string  `json:"direction" gorm:"index:idx_trade_record_direction_time"`
-	TradePrice    float64 `json:"trade_price"`
-	Quantity      float64 `json:"quantity"`
-	Amount        float64 `json:"amount"`
-	StampDuty     float64 `json:"stamp_duty"`
-	TransferFee   float64 `json:"transfer_fee"`
-	Commission    float64 `json:"commission"`
-	Remark        string  `json:"remark"`
-	TradeAt       int64   `json:"trade_at" gorm:"index:idx_trade_record_time"`
+	RealizedProfit *float64 `json:"realized_profit"`
+	RealizedCost   *float64 `json:"realized_cost"`
+	QuantityBasis  uint     `json:"quantity_basis" gorm:"not null;default:0"`
+	Leverage       float64  `json:"leverage" gorm:"not null;default:1"`
+	CustomerID     uint     `json:"customer_id" gorm:"index:idx_trade_record_customer_time;not null"`
+	Symbol         string   `json:"symbol" gorm:"index:idx_trade_record_symbol_time"`
+	StockName      string   `json:"stock_name"`
+	Currency       string   `json:"currency"`
+	Direction      string   `json:"direction" gorm:"index:idx_trade_record_direction_time"`
+	TradePrice     float64  `json:"trade_price"`
+	Quantity       float64  `json:"quantity"`
+	Amount         float64  `json:"amount"`
+	StampDuty      float64  `json:"stamp_duty"`
+	TransferFee    float64  `json:"transfer_fee"`
+	Commission     float64  `json:"commission"`
+	Remark         string   `json:"remark"`
+	TradeAt        int64    `json:"trade_at" gorm:"index:idx_trade_record_time"`
 }
 
 // LimitOrder 保存客户限价委托及对应冻结资金或持仓。

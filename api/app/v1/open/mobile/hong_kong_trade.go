@@ -501,6 +501,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		return result, exchangeRejection("持仓币种异常，请联系管理员")
 	}
 	before := customer.HKDBalance
+	var realizedProfit, realizedCost *float64
 	if input.Direction == "买入" {
 		if customer.HKDBalance < roundMoney(amount+totalFee) {
 			return result, exchangeRejection("港币余额不足（成交额及手续费均从港币账户扣除）")
@@ -527,6 +528,8 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		}
 		customer.HKDBalance = roundMoney(customer.HKDBalance + amount - totalFee)
 		removed := roundMoney(position.CostPrice * input.Quantity)
+		profit := roundMoney(amount - removed - totalFee)
+		realizedProfit, realizedCost = &profit, &removed
 		position.PositionQty -= input.Quantity
 		position.AvailableQty -= input.Quantity
 		position.TotalCost = math.Max(0, roundMoney(position.TotalCost-removed))
@@ -552,6 +555,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		return result, err
 	}
 	record := system.TradeRecord{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", Direction: input.Direction, TradePrice: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, Remark: fmt.Sprintf("港股市价模拟成交；来源 %s；报价时间 %s（可能延迟）", quote.Source, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05")), TradeAt: now.Unix()}
+	record.RealizedProfit, record.RealizedCost = realizedProfit, realizedCost
 	if input.LimitOrderID > 0 {
 		record.Remark = fmt.Sprintf("港股限价委托 %d 按有效买卖盘口模拟成交（非实盘，不模拟排队或部分成交）；来源腾讯；盘口时间 %s", input.LimitOrderID, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05"))
 	}

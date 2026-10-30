@@ -189,6 +189,13 @@ func TestHongKongTradeIntegration(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	assertState(100389.52, 0, 2)
+	var sale system.TradeRecord
+	if err := db.First(&sale, result.RecordID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sale.RealizedProfit == nil || *sale.RealizedProfit != 444.48 || sale.RealizedCost == nil || *sale.RealizedCost != 35500 {
+		t.Fatalf("港股盈亏应为500价差减55.52本笔费用，实际%+v", sale)
+	}
 	if err := db.Model(&setting).Update("config", `{"hkTrade":{"enabled":false}}`).Error; err != nil {
 		t.Fatal(err)
 	}

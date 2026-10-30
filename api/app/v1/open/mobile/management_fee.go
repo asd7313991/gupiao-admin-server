@@ -162,6 +162,8 @@ func forceCloseAllPositions(tx *gorm.DB, customer *system.Customer, positions []
 			customer.TotalLoss = roundMoney(customer.TotalLoss - realized)
 		}
 		record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(*position), CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: position.PositionQty, Amount: amount, Remark: reason, TradeAt: closedAt}
+		cost := position.TotalCost
+		record.RealizedProfit, record.RealizedCost = &realized, &cost
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}

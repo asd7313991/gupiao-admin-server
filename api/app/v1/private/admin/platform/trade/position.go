@@ -368,6 +368,8 @@ func ForceClosePosition(c *gin.Context) {
 			return err
 		}
 		record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionbasis.Leverage(position), CustomerID: customer.ID, Symbol: position.Symbol, StockName: position.StockName, Currency: position.Currency, Direction: "卖出", TradePrice: price, Quantity: quantity, Amount: amount, Remark: "后台按当前价格强平", TradeAt: closedAt}
+		cost := position.TotalCost
+		record.RealizedProfit, record.RealizedCost = &realized, &cost
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}

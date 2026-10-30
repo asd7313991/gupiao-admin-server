@@ -2,6 +2,8 @@ package finance
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,9 +17,21 @@ import (
 )
 
 type rechargeResponse struct {
-	system.FinanceRecharge
-	CustomerName  string `json:"customer_name"`
-	CustomerPhone string `json:"customer_phone"`
+	ID            uint      `json:"id"`
+	RequestID     string    `json:"request_id"`
+	CustomerID    uint      `json:"customer_id"`
+	CustomerName  string    `json:"customer_name"`
+	CustomerPhone string    `json:"customer_phone"`
+	Amount        float64   `json:"amount"`
+	Currency      string    `json:"currency"`
+	Method        string    `json:"method"`
+	Voucher       string    `json:"voucher"`
+	Status        uint      `json:"status"`
+	Remark        string    `json:"remark"`
+	FailureReason string    `json:"failure_reason"`
+	ReviewedAt    int64     `json:"reviewed_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 type withdrawalResponse struct {
 	system.FinanceWithdrawal
@@ -88,7 +102,10 @@ func ListWithdrawals(c *gin.Context) {
 
 func SaveRecharge(c *gin.Context) {
 	var input system.FinanceRecharge
-	if !middleware.CheckParam(&input, c) || input.CustomerID == 0 || input.Amount <= 0 {
+	if !middleware.CheckParam(&input, c) {
+		return
+	}
+	if input.CustomerID == 0 || input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和充值金额为必填项")
 		return
 	}
@@ -99,41 +116,42 @@ func SaveRecharge(c *gin.Context) {
 		input.Method = "支付宝转账"
 	}
 	if input.ID == 0 {
-		if input.Status == 0 {
-			input.Status = system.StatusDisabled
+		if input.Currency != "CNY" && input.Currency != "HKD" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "充值币种仅支持CNY或HKD")
+			return
+		}
+		if input.Status != 0 && input.Status != system.StatusDisabled {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "新增充值记录须先待审核，再执行通过或失败")
+			return
+		}
+		input.Status, input.ReviewedAt, input.FailureReason = system.StatusDisabled, 0, ""
+		if input.RequestID == "" {
+			input.RequestID = fmt.Sprintf("ADMIN-R-%d", time.Now().UnixNano())
+		}
+		var count int64
+		if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", input.CustomerID).Count(&count).Error; err != nil {
+			response.ReturnError(c, response.DATA_LOSS, "读取充值客户失败")
+			return
+		}
+		if count != 1 {
+			response.ReturnError(c, response.NOT_FOUND, "充值客户不存在")
+			return
 		}
 		if err := pgdb.GetClient().Create(&input).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "添加充值记录失败")
 			return
 		}
 	} else {
-		if input.Status != system.StatusEnabled && input.Status != 3 {
-			response.ReturnError(c, response.INVALID_ARGUMENT, "审核状态无效")
+		if err := validateRechargeReview(input.Status, input.FailureReason); err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
 			return
 		}
 		err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
-			var current system.FinanceRecharge
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, input.ID).Error; err != nil {
-				return err
+			current, err := reviewRecharge(tx, input.ID, input.Status, input.FailureReason, input.Remark)
+			if err == nil {
+				input = current
 			}
-			if current.Status != system.StatusDisabled {
-				return fmt.Errorf("充值申请已处理")
-			}
-			current.Status, current.ReviewedAt, current.FailureReason, current.Remark = input.Status, time.Now().Unix(), input.FailureReason, input.Remark
-			if input.Status == system.StatusEnabled {
-				var customer system.Customer
-				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, current.CustomerID).Error; err != nil {
-					return err
-				}
-				customer.Balance += current.Amount
-				if err := tx.Save(&customer).Error; err != nil {
-					return err
-				}
-				if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "银转证", Direction: "入账", Currency: current.Currency, Amount: current.Amount, Balance: customer.Balance, Remark: "银转证审核入账"}).Error; err != nil {
-					return err
-				}
-			}
-			return tx.Save(&current).Error
+			return err
 		})
 		if err != nil {
 			response.ReturnError(c, response.DATA_LOSS, err.Error())
@@ -142,6 +160,63 @@ func SaveRecharge(c *gin.Context) {
 	}
 	response.ReturnData(c, input)
 }
+
+func validateRechargeReview(status uint, reason string) error {
+	if status != system.StatusEnabled && status != 3 {
+		return fmt.Errorf("请选择通过或失败")
+	}
+	if status == 3 && strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("请填写充值失败原因")
+	}
+	return nil
+}
+
+// 调用方提供事务，锁定充值单和客户，保证并发审核最多入账一次。
+func reviewRecharge(tx *gorm.DB, id uint, status uint, reason, remark string) (system.FinanceRecharge, error) {
+	var current system.FinanceRecharge
+	if err := validateRechargeReview(status, reason); err != nil {
+		return current, err
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, id).Error; err != nil {
+		return current, err
+	}
+	if current.Status != system.StatusDisabled {
+		return current, fmt.Errorf("充值申请已处理，不能重复审核")
+	}
+	if current.Currency != "CNY" && current.Currency != "HKD" {
+		return current, fmt.Errorf("充值记录币种无效，不能审核")
+	}
+	if current.Amount <= 0 || math.IsNaN(current.Amount) || math.IsInf(current.Amount, 0) {
+		return current, fmt.Errorf("充值记录金额无效，不能审核")
+	}
+	if status == system.StatusEnabled {
+		var customer system.Customer
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, current.CustomerID).Error; err != nil {
+			return current, err
+		}
+		field, balance := "balance", customer.Balance
+		if current.Currency == "HKD" {
+			field, balance = "hkd_balance", customer.HKDBalance
+		}
+		balance = math.Round((balance+current.Amount)*100) / 100
+		if math.IsNaN(balance) || math.IsInf(balance, 0) {
+			return current, fmt.Errorf("充值后余额无效，不能审核")
+		}
+		if err := tx.Model(&customer).Update(field, balance).Error; err != nil {
+			return current, err
+		}
+		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "银转证", Direction: "入账", Currency: current.Currency, Amount: current.Amount, Balance: balance, Remark: "银转证审核入账"}).Error; err != nil {
+			return current, err
+		}
+	}
+	current.Status, current.ReviewedAt, current.Remark = status, time.Now().Unix(), strings.TrimSpace(remark)
+	current.FailureReason = ""
+	if status == 3 {
+		current.FailureReason = strings.TrimSpace(reason)
+	}
+	return current, tx.Save(&current).Error
+}
+
 func SaveWithdrawal(c *gin.Context) {
 	var input system.FinanceWithdrawal
 	if !middleware.CheckParam(&input, c) || input.CustomerID == 0 || input.Amount <= 0 {

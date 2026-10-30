@@ -12,22 +12,24 @@ import (
 )
 
 type recordResponse struct {
-	ID            uint    `json:"id"`
-	CustomerID    uint    `json:"customer_id"`
-	Symbol        string  `json:"symbol"`
-	StockName     string  `json:"stock_name"`
-	Currency      string  `json:"currency"`
-	Direction     string  `json:"direction"`
-	TradePrice    float64 `json:"trade_price"`
-	Quantity      float64 `json:"quantity"`
-	Amount        float64 `json:"amount"`
-	StampDuty     float64 `json:"stamp_duty"`
-	TransferFee   float64 `json:"transfer_fee"`
-	Commission    float64 `json:"commission"`
-	Remark        string  `json:"remark"`
-	TradeAt       int64   `json:"trade_at"`
-	CustomerName  string  `json:"customer_name"`
-	CustomerPhone string  `json:"customer_phone"`
+	RealizedProfit *float64 `json:"realized_profit"`
+	RealizedCost   *float64 `json:"realized_cost"`
+	ID             uint     `json:"id"`
+	CustomerID     uint     `json:"customer_id"`
+	Symbol         string   `json:"symbol"`
+	StockName      string   `json:"stock_name"`
+	Currency       string   `json:"currency"`
+	Direction      string   `json:"direction"`
+	TradePrice     float64  `json:"trade_price"`
+	Quantity       float64  `json:"quantity"`
+	Amount         float64  `json:"amount"`
+	StampDuty      float64  `json:"stamp_duty"`
+	TransferFee    float64  `json:"transfer_fee"`
+	Commission     float64  `json:"commission"`
+	Remark         string   `json:"remark"`
+	TradeAt        int64    `json:"trade_at"`
+	CustomerName   string   `json:"customer_name"`
+	CustomerPhone  string   `json:"customer_phone"`
 }
 
 func ListRecords(c *gin.Context) {
@@ -71,6 +73,7 @@ func SaveRecord(c *gin.Context) {
 		input.TradeAt = time.Now().Unix()
 	}
 	input.Amount = input.TradePrice * input.Quantity
+	input.RealizedProfit, input.RealizedCost = nil, nil
 	if input.ID == 0 {
 		if err := pgdb.GetClient().Create(&input).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "新增交易记录失败")

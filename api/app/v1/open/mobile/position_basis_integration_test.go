@@ -127,6 +127,18 @@ func TestPositionBasisIntegration(t *testing.T) {
 		if r.QuantityBasis != positionbasis.Actual || r.Leverage != 5 {
 			t.Fatalf("成交快照丢失%+v", r)
 		}
+		if r.Direction == "买入" && (r.RealizedProfit != nil || r.RealizedCost != nil) {
+			t.Fatal("买入不能标记为已实现盈亏")
+		}
+		if r.Direction == "卖出" {
+			expectedProfit, expectedCost := 1000.0, 5500.0
+			if r.Quantity == 1500 {
+				expectedProfit, expectedCost = 0, 16500
+			}
+			if r.RealizedProfit == nil || r.RealizedCost == nil || *r.RealizedProfit != expectedProfit || *r.RealizedCost != expectedCost {
+				t.Fatalf("实际股数部分/全部卖出盈亏快照错误：%+v", r)
+			}
+		}
 	}
 	// 未转换持仓保持旧本金扣款及五倍卖出结算，不能直接套新公式。
 	p.QuantityBasis, p.PositionQty, p.AvailableQty, p.TotalCost, p.CostPrice, p.Margin = positionbasis.Legacy, 100, 100, 1000, 10, 1000
@@ -141,6 +153,13 @@ func TestPositionBasisIntegration(t *testing.T) {
 	}
 	if customer.Balance != 10500 {
 		t.Fatalf("旧持仓应返本金1000+盈利500，实际余额%v", customer.Balance)
+	}
+	var legacySale system.TradeRecord
+	if err := db.Where("customer_id = ? AND direction = ?", customer.ID, "卖出").Order("id DESC").First(&legacySale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacySale.RealizedProfit == nil || *legacySale.RealizedProfit != 500 || legacySale.RealizedCost == nil || *legacySale.RealizedCost != 1000 {
+		t.Fatal("旧口径卖出须保存结算使用的5倍盈亏，不可混用新口径")
 	}
 	if _, err := run("买入", 100, 10, system.LimitOrder{QuantityBasis: positionbasis.Legacy, Leverage: 5}); err != nil {
 		t.Fatal(err)
@@ -163,6 +182,52 @@ func TestPositionBasisIntegration(t *testing.T) {
 	if p.Leverage != 8 || p.Margin != 1000 || p.QuantityBasis != positionbasis.Legacy {
 		t.Fatal("迁移前无杠杆快照的旧委托应保持原设置回退，不伪造1倍")
 	}
+
+	t.Run("部分亏损卖出费用和剩余成本快照", func(t *testing.T) {
+		for _, basis := range []uint{positionbasis.Actual, positionbasis.Legacy} {
+			owner := system.Customer{Phone: fmt.Sprintf("profit-test-%d", basis), Balance: 10000}
+			if err := db.Create(&owner).Error; err != nil {
+				t.Fatal(err)
+			}
+			position := system.TradePosition{CustomerID: owner.ID, Symbol: security.Symbol, Currency: "CNY",
+				PositionQty: 200, AvailableQty: 200, TotalCost: 2000, CostPrice: 10, Margin: 2000, Leverage: 5, QuantityBasis: basis, Status: 1}
+			if basis == positionbasis.Actual {
+				position.Margin = 400
+			}
+			if err := db.Create(&position).Error; err != nil {
+				t.Fatal(err)
+			}
+			fees := mobileTradeSettings{}
+			fees.Trade.SellCommission, fees.Trade.MinCommission, fees.Trade.StampDuty, fees.Trade.TransferFee = .001, 5, .0005, .0001
+			stock := security
+			stock.LastPrice = 9.99
+			var result orderResult
+			var rejection string
+			err := db.Transaction(func(tx *gorm.DB) error {
+				return executeMobileOrder(tx, &owner, stock, orderInput{Direction: "卖出", Quantity: 100}, fees, &result, &rejection)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var record system.TradeRecord
+			if err := db.First(&record, result.RecordID).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := -6.6
+			if basis == positionbasis.Legacy {
+				want = -10.6
+			}
+			if record.RealizedProfit == nil || *record.RealizedProfit != want || record.RealizedCost == nil || *record.RealizedCost != 1000 || result.TotalFee != 5.6 {
+				t.Fatalf("亏损快照必须扣本笔费用且匹配原口径：记录%+v，费用%v，预期%v", record, result.TotalFee, want)
+			}
+			if err := db.First(&position, position.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if position.TotalCost != 1000 || position.PositionQty != 100 {
+				t.Fatal("保存盈亏不能改变剩余持仓成本算法")
+			}
+		}
+	})
 
 	t.Run("实际股数限价冻结撤单成交与自动强平", func(t *testing.T) {
 		customer := system.Customer{Phone: "basis-limit-test", Balance: 10000, Status: system.StatusEnabled,

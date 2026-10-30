@@ -324,6 +324,7 @@ func validateAStockTradeQuote(book orderBookView, now time.Time, limit bool) err
 
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string, orders ...system.LimitOrder) error {
 	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security, input.Quantity, input.Direction, settings)
+	var realizedProfit, realizedCost *float64
 
 	var position system.TradePosition
 	positionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error
@@ -406,6 +407,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			marginRemoved = roundMoney(position.Margin * input.Quantity / positionQtyBefore)
 		}
 		realized := roundMoney((amount-costRemoved)*positionbasis.Multiplier(position) - totalFee)
+		realizedProfit, realizedCost = &realized, &costRemoved
 		customer.Balance = roundMoney(customer.Balance + marginRemoved + realized)
 		if realized >= 0 {
 			customer.TotalProfit += realized
@@ -433,6 +435,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		return err
 	}
 	record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(position), CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", Direction: input.Direction, TradePrice: security.LastPrice, Quantity: input.Quantity, Amount: amount, StampDuty: stampDuty, TransferFee: transferFee, Commission: commission + managementFee, Remark: "移动端市价成交", TradeAt: time.Now().Unix()}
+	record.RealizedProfit, record.RealizedCost = realizedProfit, realizedCost
 	if err := tx.Create(&record).Error; err != nil {
 		return err
 	}

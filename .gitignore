@@ -36,3 +36,4 @@ server
 api-server
 api-server.pid
 /docker/postgres_data/
+/static/article-images/

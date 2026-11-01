@@ -21,10 +21,11 @@ type AppNotice struct {
 // AppArticle 保存应用内协议、规则、风险提示等富文本文章。
 type AppArticle struct {
 	gorm.Model
-	Title   string `json:"title" gorm:"index"`
-	Type    string `json:"type" gorm:"index"`
-	Content string `json:"content" gorm:"type:text"`
-	Status  uint   `json:"status" gorm:"default:1;index"`
+	Title        string   `json:"title" gorm:"index"`
+	Type         string   `json:"type" gorm:"index"`
+	Content      string   `json:"content" gorm:"type:text"`
+	FooterImages []string `json:"footer_images" gorm:"serializer:json;type:text;not null;default:'[]'"`
+	Status       uint     `json:"status" gorm:"default:1;index"`
 }
 
 // Tenant 租户/企业表

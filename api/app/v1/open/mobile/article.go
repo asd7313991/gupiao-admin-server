@@ -2,6 +2,9 @@ package mobile
 
 import (
 	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +13,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/articleimage"
 )
 
 var mobileArticleTypes = map[string]struct{}{
@@ -19,11 +23,12 @@ var mobileArticleTypes = map[string]struct{}{
 }
 
 type mobileArticleView struct {
-	Exists    bool   `json:"exists"`
-	Title     string `json:"title"`
-	Type      string `json:"type"`
-	Content   string `json:"content"`
-	UpdatedAt int64  `json:"updated_at"`
+	Exists       bool     `json:"exists"`
+	Title        string   `json:"title"`
+	Type         string   `json:"type"`
+	Content      string   `json:"content"`
+	FooterImages []string `json:"footer_images"`
+	UpdatedAt    int64    `json:"updated_at"`
 }
 
 func MobileArticle(c *gin.Context) {
@@ -45,10 +50,32 @@ func MobileArticle(c *gin.Context) {
 	}
 
 	response.ReturnData(c, mobileArticleView{
-		Exists:    true,
-		Title:     article.Title,
-		Type:      article.Type,
-		Content:   article.Content,
-		UpdatedAt: article.UpdatedAt.Unix(),
+		Exists:       true,
+		Title:        article.Title,
+		Type:         article.Type,
+		Content:      article.Content,
+		FooterImages: article.FooterImages,
+		UpdatedAt:    article.UpdatedAt.Unix(),
 	})
+}
+
+func MobileArticleImage(c *gin.Context) {
+	name := c.Param("name")
+	if !articleimage.ValidName(name) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "照片地址无效")
+		return
+	}
+	path := filepath.Join(articleimage.Directory, name)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if err != nil || !info.Mode().IsRegular() {
+		response.ReturnError(c, response.DATA_LOSS, "读取照片失败")
+		return
+	}
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "public, max-age=31536000, immutable")
+	c.File(path)
 }

@@ -126,6 +126,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	settingGroup.PUT("/articles", platformSetting.SaveArticle)
 	settingGroup.DELETE("/articles", platformSetting.DeleteArticle)
 	settingGroup.PUT("/articles/status", platformSetting.UpdateArticleStatus)
+	settingGroup.POST("/articles/image", platformSetting.UploadArticleImage)
 
 	newsGroup := group.Group("/news", middleware.PlatformMenuAccess)
 	newsGroup.GET("", platformNews.ListNews)

@@ -13,6 +13,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	group.GET("/branding", MobileBranding)
 	group.GET("/branding/logo", MobileBrandLogo)
 	group.GET("/article", MobileArticle)
+	group.GET("/article-images/:name", MobileArticleImage)
 	group.GET("/news", ListNews)
 	group.GET("/news/categories", ListNewsCategories)
 	group.GET("/news/:id", GetNewsByID)

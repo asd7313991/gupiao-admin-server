@@ -210,7 +210,7 @@ func SavePosition(c *gin.Context) {
 		if input.CurrentPrice <= 0 {
 			input.CurrentPrice = input.CostPrice
 		}
-		input.Leverage = 1
+		input.Leverage = 5
 	}
 	if input.BuyAt == 0 {
 		input.BuyAt = time.Now().Unix()

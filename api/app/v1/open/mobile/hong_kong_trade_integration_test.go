@@ -105,7 +105,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 		if err := db.Where("symbol = ?", security.Symbol).First(&p).Error; err != nil {
 			t.Fatal(err)
 		}
-		if p.PositionQty != qty || p.AvailableQty != qty || p.Currency != "HKD" || p.Leverage != 1 {
+		if p.PositionQty != qty || p.AvailableQty != qty || p.Currency != "HKD" || p.Leverage != 5 || p.QuantityBasis != 1 {
 			t.Fatalf("持仓错误 %+v", p)
 		}
 		var count int64
@@ -115,13 +115,13 @@ func TestHongKongTradeIntegration(t *testing.T) {
 			}
 		}
 	}
-	assertState(64445.04, 1000, 1)
+	assertState(92845.04, 1000, 1)
 	for _, tc := range []struct {
 		name   string
 		change func(*hongKongOrderInput, *hongKongQuote)
 	}{
 		{"不足一手", func(i *hongKongOrderInput, q *hongKongQuote) { i.Quantity = 100 }},
-		{"余额不足", func(i *hongKongOrderInput, q *hongKongQuote) { i.Quantity = 10000 }},
+		{"余额不足", func(i *hongKongOrderInput, q *hongKongQuote) { i.Quantity = 100000 }},
 		{"卖出不足", func(i *hongKongOrderInput, q *hongKongQuote) { i.Direction = "卖出"; i.Quantity = 2000 }},
 		{"零数量", func(i *hongKongOrderInput, q *hongKongQuote) { i.Quantity = 0 }},
 		{"过期报价", func(i *hongKongOrderInput, q *hongKongQuote) { q.QuoteAt = now.Add(-31 * time.Minute).Unix() }},
@@ -135,7 +135,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 			if _, err := run(input, q); err == nil {
 				t.Fatal("应拒绝")
 			}
-			assertState(64445.04, 1000, 1)
+			assertState(92845.04, 1000, 1)
 		})
 	}
 	conflict := buy
@@ -178,7 +178,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if err := db.Exec("ALTER TABLE customer_fund_records DROP CONSTRAINT reject_hkd").Error; err != nil {
 		t.Fatal(err)
 	}
-	assertState(64445.04, 1000, 1)
+	assertState(92845.04, 1000, 1)
 	sell := buy
 	sell.RequestID = "hk-test-request-sell"
 	sell.Direction = "卖出"
@@ -226,7 +226,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 		t.Fatal("拒绝错误类型无效")
 	}
 	if err := db.Model(&system.TradePosition{}).Where("symbol = ?", security.Symbol).
-		Updates(map[string]any{"position_qty": 1000, "available_qty": 1000, "current_price": 36, "cost_price": 100, "total_cost": 100000, "margin": 100000, "status": 1}).Error; err != nil {
+		Updates(map[string]any{"position_qty": 1000, "available_qty": 1000, "current_price": 36, "cost_price": 100, "total_cost": 100000, "margin": 20000, "status": 1}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if forced, err := processCustomerManagementFeeDB(db, customer.ID, "2026-10-22", 0.00028, now); err != nil || forced {
@@ -251,7 +251,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if err != nil || !closeResult.LocalCloseTest || closeResult.QuoteAt != closeQuote.QuoteAt {
 		t.Fatalf("收市价测试回执=%+v err=%v", closeResult, err)
 	}
-	assertState(64834.56, 2000, 3)
+	assertState(93234.56, 2000, 3)
 	var closeRecord system.TradeRecord
 	if err := db.First(&closeRecord, closeResult.RecordID).Error; err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if _, err := runWithMode(closeBuy, closeQuote, true); err == nil {
 		t.Fatal("次日不得继续使用昨日收市价")
 	}
-	assertState(64834.56, 2000, 3)
+	assertState(93234.56, 2000, 3)
 	now = time.Date(2026, 10, 23, 8, 30, 0, 0, now.Location())
 	if err := db.Model(&setting).Update("config", `{"trade":{"allDay":true},"hkTrade":{"enabled":true,"commission":0.00025,"minCommission":15,"stampDuty":0.001,"regulatoryFee":0.000027,"tradingFee":0.0000565,"settlementFee":0.000042}}`).Error; err != nil {
 		t.Fatal(err)
@@ -278,7 +278,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if err != nil || !closeResult.ClosePriceSimulation || closeResult.LocalCloseTest || closeResult.QuoteAt != closeQuote.QuoteAt {
 		t.Fatalf("全天收市价回执错误：%+v %v", closeResult, err)
 	}
-	assertState(29279.60, 3000, 4)
+	assertState(86079.60, 3000, 4)
 	var simulationRecord system.TradeRecord
 	var simulationFlow system.CustomerFundRecord
 	if err := db.First(&simulationRecord, closeResult.RecordID).Error; err != nil {
@@ -297,7 +297,7 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if result, err := run(closeSell, closeQuote); err != nil || !result.ClosePriceSimulation {
 		t.Fatalf("全天收市价卖出失败：%+v %v", result, err)
 	}
-	assertState(64724.64, 2000, 5)
+	assertState(75924.64, 2000, 5)
 	if err := db.Model(&setting).Update("config", `{"hkTrade":{"enabled":true}}`).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -309,5 +309,5 @@ func TestHongKongTradeIntegration(t *testing.T) {
 	if _, err := run(closeBuy, closeQuote); err == nil {
 		t.Fatal("关闭全天模式后不得新增收市价成交")
 	}
-	assertState(64724.64, 2000, 5)
+	assertState(75924.64, 2000, 5)
 }

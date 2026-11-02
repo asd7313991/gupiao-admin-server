@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	Legacy uint = 0
-	Actual uint = 1
+	Legacy            uint    = 0
+	Actual            uint    = 1
+	FinancingLeverage float64 = 5
 )
 
 func Leverage(p system.TradePosition) float64 {
@@ -48,5 +49,29 @@ func BuyMargin(amount, leverage float64, basis uint) float64 {
 	if basis == Actual && leverage >= 1 {
 		return Money(amount / leverage)
 	}
+
 	return Money(amount)
+}
+
+// 保留原担保金总额，只将超出买入基础本金的部分独立展示，不产生退款。
+func MarginParts(p system.TradePosition) (base, supplemental float64) {
+	if p.SupplementalMargin != nil {
+		return Money(p.Margin - *p.SupplementalMargin), Money(*p.SupplementalMargin)
+	}
+	basis := p.QuantityBasis
+	if IsActual(p) {
+		basis = Actual
+	}
+	base = math.Min(p.Margin, BuyMargin(p.TotalCost, Leverage(p), basis))
+	return Money(base), Money(p.Margin - base)
+}
+
+func SetSupplementalMargin(p *system.TradePosition, supplemental float64) {
+	supplemental = Money(supplemental)
+	p.SupplementalMargin = &supplemental
+	p.BaseMargin = Money(p.Margin - supplemental)
+}
+
+func IsFinanced(p system.TradePosition) bool {
+	return IsActual(p) && Leverage(p) == FinancingLeverage
 }

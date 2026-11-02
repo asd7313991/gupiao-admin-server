@@ -100,23 +100,25 @@ type orderResult struct {
 }
 
 type tradePositionView struct {
-	QuantityBasis uint    `json:"quantity_basis"`
-	QuoteSource   string  `json:"quote_source"`
-	QuoteAt       int64   `json:"quote_at"`
-	Currency      string  `json:"currency"`
-	ID            uint    `json:"id"`
-	Symbol        string  `json:"symbol"`
-	StockName     string  `json:"stock_name"`
-	PositionQty   float64 `json:"position_qty"`
-	AvailableQty  float64 `json:"available_qty"`
-	CurrentPrice  float64 `json:"current_price"`
-	CostPrice     float64 `json:"cost_price"`
-	TotalCost     float64 `json:"total_cost"`
-	Margin        float64 `json:"margin"`
-	Leverage      float64 `json:"leverage"`
-	MarketValue   float64 `json:"market_value"`
-	ProfitLoss    float64 `json:"profit_loss"`
-	ProfitRate    float64 `json:"profit_rate"`
+	QuantityBasis      uint    `json:"quantity_basis"`
+	QuoteSource        string  `json:"quote_source"`
+	QuoteAt            int64   `json:"quote_at"`
+	Currency           string  `json:"currency"`
+	ID                 uint    `json:"id"`
+	Symbol             string  `json:"symbol"`
+	StockName          string  `json:"stock_name"`
+	PositionQty        float64 `json:"position_qty"`
+	AvailableQty       float64 `json:"available_qty"`
+	CurrentPrice       float64 `json:"current_price"`
+	CostPrice          float64 `json:"cost_price"`
+	TotalCost          float64 `json:"total_cost"`
+	Margin             float64 `json:"margin"`
+	BaseMargin         float64 `json:"base_margin"`
+	SupplementalMargin float64 `json:"supplemental_margin"`
+	Leverage           float64 `json:"leverage"`
+	MarketValue        float64 `json:"market_value"`
+	ProfitLoss         float64 `json:"profit_loss"`
+	ProfitRate         float64 `json:"profit_rate"`
 }
 
 type tradeHoldingView struct {
@@ -204,7 +206,9 @@ func valueCustomerPosition(item system.TradePosition, quote positionquote.Quote)
 	if margin <= 0 && item.TotalCost > 0 {
 		margin = positionbasis.BuyMargin(item.TotalCost, leverage, item.QuantityBasis)
 	}
-	return tradePositionView{QuantityBasis: item.QuantityBasis, QuoteSource: quote.Source, QuoteAt: quote.At, Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: quote.Price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate}
+	item.Margin = margin
+	base, supplemental := positionbasis.MarginParts(item)
+	return tradePositionView{QuantityBasis: item.QuantityBasis, QuoteSource: quote.Source, QuoteAt: quote.At, Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: quote.Price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, BaseMargin: base, SupplementalMargin: supplemental, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate}
 }
 
 func ListCustomerTradeRecords(c *gin.Context) {
@@ -344,6 +348,10 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		}
 	}
 	if input.Direction == "买入" {
+		if len(orders) == 0 && positionErr == nil && position.PositionQty > 0 && (!positionbasis.IsFinanced(position) || position.Status != system.StatusEnabled) {
+			*rejection = "该持仓尚未完成5倍融资转换，暂不支持加仓；原持仓仍可按原规则卖出"
+			return errTradeRejected
+		}
 		leverage := effectiveLeverage(settings)
 		basis := positionbasis.Actual
 		if positionErr == nil && position.PositionQty > 0 {
@@ -360,6 +368,11 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 				leverage = order.Leverage
 				if leverage < 1 {
 					return fmt.Errorf("委托杠杆快照无效")
+				}
+			} else if positionErr != nil || position.PositionQty <= 0 {
+				leverage = 1
+				if settings.Risk.AppLeverageEnabled && settings.Risk.DefaultLeverage >= 1 {
+					leverage = settings.Risk.DefaultLeverage
 				}
 			}
 		}
@@ -380,8 +393,10 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			return positionErr
 		}
 		newQty := position.PositionQty + input.Quantity
+		_, supplemental := positionbasis.MarginParts(position)
 		position.TotalCost = roundMoney(position.TotalCost + amount)
 		position.Margin = roundMoney(position.Margin + margin)
+		positionbasis.SetSupplementalMargin(&position, supplemental)
 		position.Leverage = leverage
 		position.QuantityBasis = basis
 		position.Status = system.StatusEnabled
@@ -403,8 +418,11 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			costRemoved = position.TotalCost * input.Quantity / positionQtyBefore
 		}
 		marginRemoved := position.Margin
+		_, supplemental := positionbasis.MarginParts(position)
+		supplementRemoved := supplemental
 		if input.Quantity < positionQtyBefore {
 			marginRemoved = roundMoney(position.Margin * input.Quantity / positionQtyBefore)
+			supplementRemoved = roundMoney(supplemental * input.Quantity / positionQtyBefore)
 		}
 		realized := roundMoney((amount-costRemoved)*positionbasis.Multiplier(position) - totalFee)
 		realizedProfit, realizedCost = &realized, &costRemoved
@@ -418,8 +436,10 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		position.AvailableQty -= input.Quantity
 		position.TotalCost = math.Max(0, position.TotalCost-costRemoved)
 		position.Margin = math.Max(0, roundMoney(position.Margin-marginRemoved))
+		positionbasis.SetSupplementalMargin(&position, supplemental-supplementRemoved)
 		if position.PositionQty == 0 {
 			position.CostPrice, position.Margin, position.MarginCallLevel, position.Status = 0, 0, 0, system.StatusDisabled
+			positionbasis.SetSupplementalMargin(&position, 0)
 		}
 	}
 	position.CurrentPrice = security.LastPrice
@@ -477,11 +497,8 @@ func parseMobileTradeSettings(config string) (mobileTradeSettings, error) {
 	return result, json.Unmarshal([]byte(config), &result)
 }
 
-func effectiveLeverage(settings mobileTradeSettings) float64 {
-	if !settings.Risk.AppLeverageEnabled || settings.Risk.DefaultLeverage < 1 {
-		return 1
-	}
-	return settings.Risk.DefaultLeverage
+func effectiveLeverage(_ mobileTradeSettings) float64 {
+	return positionbasis.FinancingLeverage
 }
 
 func effectiveManagementFeeRate(settings mobileTradeSettings) float64 {

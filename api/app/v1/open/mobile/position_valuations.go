@@ -12,15 +12,18 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/hkquote"
+	"api-server/util/positionbasis"
 	"api-server/util/positionquote"
 )
 
 type positionValuationView struct {
-	Holding   tradeHoldingView   `json:"holding"`
-	CostPrice float64            `json:"cost_price"`
-	Margin    float64            `json:"margin"`
-	Valuation *tradePositionView `json:"valuation"`
-	Error     string             `json:"error,omitempty"`
+	Holding            tradeHoldingView   `json:"holding"`
+	CostPrice          float64            `json:"cost_price"`
+	Margin             float64            `json:"margin"`
+	BaseMargin         float64            `json:"base_margin"`
+	SupplementalMargin float64            `json:"supplemental_margin"`
+	Valuation          *tradePositionView `json:"valuation"`
+	Error              string             `json:"error,omitempty"`
 }
 
 func availablePositionViews(items []system.TradePosition, quotes map[string]positionquote.Quote) ([]positionValuationView, bool) {
@@ -29,8 +32,14 @@ func availablePositionViews(items []system.TradePosition, quotes map[string]posi
 	for _, item := range items {
 		row := positionValuationView{Holding: holdingView(item), CostPrice: item.CostPrice, Margin: item.Margin}
 		if row.Margin <= 0 && item.TotalCost > 0 {
-			row.Margin = roundMoney(item.TotalCost)
+			basis := item.QuantityBasis
+			if positionbasis.IsActual(item) {
+				basis = positionbasis.Actual
+			}
+			row.Margin = positionbasis.BuyMargin(item.TotalCost, positionLeverage(item), basis)
 		}
+		item.Margin = row.Margin
+		row.BaseMargin, row.SupplementalMargin = positionbasis.MarginParts(item)
 		if quote, ok := quotes[item.Symbol]; ok && quote.Price > 0 && quote.At > 0 {
 			valuation := valueCustomerPosition(item, quote)
 			row.Valuation = &valuation

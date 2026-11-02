@@ -145,6 +145,9 @@ func TestPositionBasisIntegration(t *testing.T) {
 	if err := db.Save(&p).Error; err != nil {
 		t.Fatal(err)
 	}
+	if _, err := run("买入", 100, 10); err == nil {
+		t.Fatal("未转换的旧A股持仓不能直接混入新5倍本金")
+	}
 	if _, err := run("卖出", 100, 11); err != nil {
 		t.Fatal(err)
 	}

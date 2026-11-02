@@ -139,6 +139,10 @@ func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.Stock
 				return err
 			}
 			if err == nil && existing.PositionQty > 0 {
+				if !positionbasis.IsFinanced(existing) || existing.Status != system.StatusEnabled {
+					rejection = "该持仓尚未完成5倍融资转换，暂不支持新增买入挂单；原挂单仍按原快照处理"
+					return errTradeRejected
+				}
 				order.QuantityBasis, order.Leverage = existing.QuantityBasis, positionLeverage(existing)
 			}
 			securityAtPrice := security

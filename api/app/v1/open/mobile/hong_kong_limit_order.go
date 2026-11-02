@@ -17,6 +17,7 @@ import (
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 type hongKongLimitInput struct {
@@ -153,15 +154,26 @@ func placeHongKongLimitOrderDB(db *gorm.DB, customerID uint, security system.Sto
 		if input.Code != security.Code {
 			return exchangeRejection("委托证券代码不匹配")
 		}
-		order = system.LimitOrder{CustomerID: customerID, RequestID: &input.RequestID, Symbol: security.Symbol, StockName: security.Name,
+		order = system.LimitOrder{QuantityBasis: positionbasis.Actual, Leverage: positionbasis.FinancingLeverage, CustomerID: customerID, RequestID: &input.RequestID, Symbol: security.Symbol, StockName: security.Name,
 			Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
 		if input.Direction == "买入" {
+			var existing system.TradePosition
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ?", customerID, security.Symbol).First(&existing).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if err == nil && existing.PositionQty > 0 && (!positionbasis.IsFinanced(existing) || existing.Status != system.StatusEnabled || existing.Currency != "HKD") {
+				return exchangeRejection("该持仓尚未完成5倍融资转换或状态异常，暂不支持新增买入挂单")
+			}
 			if math.Mod(input.Quantity, quote.LotSize) != 0 {
 				return exchangeRejection(fmt.Sprintf("该港股每手 %.0f 股，买入数量必须为整手", quote.LotSize))
 			}
 			security.LastPrice = input.LimitPrice
 			amount, _, _, _, _, fees := calculateTradeFees(security, input.Quantity, input.Direction, settings)
-			order.FrozenAmount = roundMoney(amount + fees)
+			order.FrozenAmount = roundMoney(positionbasis.BuyMargin(amount, order.Leverage, positionbasis.Actual) + fees)
+			if positionbasis.BuyMargin(amount, order.Leverage, positionbasis.Actual) <= 0 {
+				return exchangeRejection("买入本金不足0.01 HKD，请调整数量")
+			}
 			if customer.HKDBalance < order.FrozenAmount {
 				return exchangeRejection("可用港币不足以冻结本金和预估费用")
 			}
@@ -183,6 +195,7 @@ func placeHongKongLimitOrderDB(db *gorm.DB, customerID uint, security system.Sto
 				return exchangeRejection("港股可卖持仓不足，非全部卖出时须为整手")
 			}
 			position.AvailableQty -= input.Quantity
+			order.QuantityBasis, order.Leverage = position.QuantityBasis, positionLeverage(position)
 			order.FrozenQuantity = input.Quantity
 			if err := tx.Save(&position).Error; err != nil {
 				return err
@@ -333,7 +346,14 @@ func matchHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, quote hongKongQ
 		security.LastPrice = price
 		if order.Direction == "买入" {
 			amount, _, _, _, _, fee := calculateTradeFees(security, order.Quantity, order.Direction, settings)
-			if roundMoney(amount+fee) > order.FrozenAmount {
+			leverage := order.Leverage
+			if leverage == 0 {
+				leverage = 1
+			}
+			if leverage != 1 && leverage != positionbasis.FinancingLeverage {
+				return exchangeRejection("港股委托杠杆快照无效")
+			}
+			if roundMoney(positionbasis.BuyMargin(amount, leverage, positionbasis.Actual)+fee) > order.FrozenAmount {
 				return exchangeRejection("当前费用超过原冻结港币，委托保留待成交，请撤单后重新提交")
 			}
 		}
@@ -342,7 +362,7 @@ func matchHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, quote hongKongQ
 		}
 		quote.LastPrice = price
 		input := hongKongOrderInput{orderInput: orderInput{Code: quote.Code, Direction: order.Direction, Quantity: order.Quantity},
-			RequestID: fmt.Sprintf("limit:%d", order.ID), LimitOrderID: order.ID}
+			RequestID: fmt.Sprintf("limit:%d", order.ID), LimitOrderID: order.ID, OrderLeverage: order.Leverage}
 		result, err := executeHongKongOrder(tx, &customer, security, quote, input, now, false)
 		if err != nil {
 			return err

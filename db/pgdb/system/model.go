@@ -253,24 +253,26 @@ type CustomerDevice struct {
 // TradePosition 保存客户证券持仓与成本、盈亏数据。
 type TradePosition struct {
 	gorm.Model
-	QuantityBasis   uint    `json:"quantity_basis" gorm:"not null;default:0"`
-	CustomerID      uint    `json:"customer_id" gorm:"index;not null"`
-	Symbol          string  `json:"symbol" gorm:"index"`
-	StockName       string  `json:"stock_name"`
-	Currency        string  `json:"currency"`
-	PositionQty     float64 `json:"position_qty"`
-	AvailableQty    float64 `json:"available_qty"`
-	CurrentPrice    float64 `json:"current_price"`
-	CostPrice       float64 `json:"cost_price"`
-	TotalCost       float64 `json:"total_cost"`
-	Margin          float64 `json:"margin"`
-	Leverage        float64 `json:"leverage" gorm:"default:1"`
-	MarginCallLevel int     `json:"margin_call_level"`
-	MarketValue     float64 `json:"market_value"`
-	ProfitLoss      float64 `json:"profit_loss"`
-	ProfitRate      float64 `json:"profit_rate"`
-	Status          uint    `json:"status" gorm:"default:1"`
-	BuyAt           int64   `json:"buy_at"`
+	QuantityBasis      uint     `json:"quantity_basis" gorm:"not null;default:0"`
+	CustomerID         uint     `json:"customer_id" gorm:"index;not null"`
+	Symbol             string   `json:"symbol" gorm:"index"`
+	StockName          string   `json:"stock_name"`
+	Currency           string   `json:"currency"`
+	PositionQty        float64  `json:"position_qty"`
+	AvailableQty       float64  `json:"available_qty"`
+	CurrentPrice       float64  `json:"current_price"`
+	CostPrice          float64  `json:"cost_price"`
+	TotalCost          float64  `json:"total_cost"`
+	Margin             float64  `json:"margin"`
+	BaseMargin         float64  `json:"base_margin" gorm:"-"`
+	SupplementalMargin *float64 `json:"supplemental_margin"`
+	Leverage           float64  `json:"leverage" gorm:"default:1"`
+	MarginCallLevel    int      `json:"margin_call_level"`
+	MarketValue        float64  `json:"market_value"`
+	ProfitLoss         float64  `json:"profit_loss"`
+	ProfitRate         float64  `json:"profit_rate"`
+	Status             uint     `json:"status" gorm:"default:1"`
+	BuyAt              int64    `json:"buy_at"`
 }
 
 // PositionBasisConversion 保存经批准的持仓口径转换前后快照。

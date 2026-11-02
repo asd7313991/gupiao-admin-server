@@ -48,6 +48,8 @@ func ListPositions(c *gin.Context) {
 		return
 	}
 	for index := range items {
+		_, supplemental := positionbasis.MarginParts(items[index])
+		positionbasis.SetSupplementalMargin(&items[index], supplemental)
 		if price, exists := livePrices[items[index].Symbol]; exists {
 			refreshPositionMarketValues(&items[index], price)
 		}
@@ -210,7 +212,7 @@ func SavePosition(c *gin.Context) {
 		if input.CurrentPrice <= 0 {
 			input.CurrentPrice = input.CostPrice
 		}
-		input.Leverage = 5
+		input.Leverage = positionbasis.FinancingLeverage
 	}
 	if input.BuyAt == 0 {
 		input.BuyAt = time.Now().Unix()
@@ -221,15 +223,13 @@ func SavePosition(c *gin.Context) {
 	}
 	if input.ID == 0 {
 		input.QuantityBasis = positionbasis.Actual
-	} else {
-		var existing system.TradePosition
-		if err := pgdb.GetClient().First(&existing, input.ID).Error; err != nil {
-			response.ReturnError(c, response.NOT_FOUND, "持仓不存在")
-			return
-		}
-		input.QuantityBasis = existing.QuantityBasis
 	}
-	input.TradePosition.Margin = positionbasis.BuyMargin(input.TotalCost, input.Leverage, input.QuantityBasis)
+	if input.ID == 0 {
+		input.TradePosition.Margin = positionbasis.BuyMargin(input.TotalCost, input.Leverage, input.QuantityBasis)
+	}
+	if input.ID == 0 {
+		positionbasis.SetSupplementalMargin(&input.TradePosition, 0)
+	}
 	input.TradePosition.MarketValue, input.TradePosition.ProfitLoss, input.TradePosition.ProfitRate = positionbasis.Values(input.TradePosition, input.CurrentPrice)
 	if input.TradePosition.TotalCost != 0 {
 		input.TradePosition.ProfitRate = input.ProfitLoss / input.TotalCost * 100
@@ -243,17 +243,47 @@ func SavePosition(c *gin.Context) {
 			return
 		}
 	} else {
-		var existing system.TradePosition
-		if err := pgdb.GetClient().First(&existing, input.ID).Error; err != nil {
-			response.ReturnError(c, response.NOT_FOUND, "持仓不存在")
+		var rejection string
+		err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+			var snapshot system.TradePosition
+			if err := tx.Select("id", "customer_id").First(&snapshot, input.ID).Error; err != nil {
+				return err
+			}
+			var customer system.Customer
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, snapshot.CustomerID).Error; err != nil {
+				return err
+			}
+			var existing system.TradePosition
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, input.ID).Error; err != nil {
+				return err
+			}
+			if strings.HasSuffix(existing.Symbol, ".HK") || strings.HasSuffix(input.Symbol, ".HK") {
+				rejection = "港股持仓请通过模拟买卖调整，不能直接覆盖账务"
+				return fmt.Errorf("%s", rejection)
+			}
+			if input.CustomerID != existing.CustomerID || input.Symbol != existing.Symbol || input.Currency != existing.Currency || input.Leverage != existing.Leverage {
+				rejection = "已有持仓的账户、证券、币种或杠杆变更需专用转换，普通编辑不能修改"
+				return fmt.Errorf("%s", rejection)
+			}
+			input.QuantityBasis, input.CreatedAt = existing.QuantityBasis, existing.CreatedAt
+			input.MarginCallLevel = existing.MarginCallLevel
+			input.Margin = roundPositionMoney(existing.Margin +
+				positionbasis.BuyMargin(input.TotalCost, input.Leverage, input.QuantityBasis) -
+				positionbasis.BuyMargin(existing.TotalCost, existing.Leverage, existing.QuantityBasis))
+			if input.Margin < 0 {
+				rejection = "担保金异常，请先核对资金"
+				return fmt.Errorf("%s", rejection)
+			}
+			_, supplemental := positionbasis.MarginParts(existing)
+			positionbasis.SetSupplementalMargin(&input.TradePosition, supplemental)
+			input.MarketValue, input.ProfitLoss, input.ProfitRate = positionbasis.Values(input.TradePosition, input.CurrentPrice)
+			return tx.Save(&input.TradePosition).Error
+		})
+		if rejection != "" {
+			response.ReturnError(c, response.FAILED_PRECONDITION, rejection)
 			return
 		}
-		input.TradePosition.CreatedAt = existing.CreatedAt
-		if strings.HasSuffix(existing.Symbol, ".HK") || strings.HasSuffix(input.Symbol, ".HK") {
-			response.ReturnError(c, response.FAILED_PRECONDITION, "港股持仓请通过模拟买卖调整，不能直接覆盖账务")
-			return
-		}
-		if err := pgdb.GetClient().Save(&input.TradePosition).Error; err != nil {
+		if err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "修改持仓失败")
 			return
 		}
@@ -350,7 +380,7 @@ func ForceClosePosition(c *gin.Context) {
 		hongKong := strings.HasSuffix(position.Symbol, ".HK")
 		balance := &customer.Balance
 		if hongKong {
-			if position.Currency != "HKD" || position.Leverage != 1 {
+			if position.Currency != "HKD" || (position.Leverage != 1 && !positionbasis.IsFinanced(position)) {
 				return fmt.Errorf("港股持仓币种或杠杆异常")
 			}
 			balance = &customer.HKDBalance
@@ -384,6 +414,7 @@ func ForceClosePosition(c *gin.Context) {
 		}
 		position.PositionQty, position.AvailableQty = 0, 0
 		position.TotalCost, position.Margin, position.MarketValue = 0, 0, 0
+		positionbasis.SetSupplementalMargin(&position, 0)
 		position.CostPrice, position.ProfitLoss, position.ProfitRate = 0, 0, 0
 		position.CurrentPrice, position.Status = price, system.StatusDisabled
 		if err := tx.Save(&customer).Error; err != nil {

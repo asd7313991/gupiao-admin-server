@@ -93,6 +93,9 @@ func TestHongKongLimitOrderIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	reserved := order.FrozenAmount
+	if order.Leverage != 5 || order.QuantityBasis != 1 || reserved != 819.50 {
+		t.Fatalf("港股必须按800本金加完整成交额手续费冻结，实际：%+v", order)
+	}
 	assertAccount(roundMoney(100000-reserved), reserved)
 	conflict := input
 	conflict.LimitPrice = 0.9
@@ -139,7 +142,7 @@ func TestHongKongLimitOrderIntegration(t *testing.T) {
 	if err := db.First(&record, order.TradeRecordID).Error; err != nil || !strings.Contains(record.Remark, "有效买卖盘口") || record.TradePrice != 0.95 {
 		t.Fatal("成交来源错误", record, err)
 	}
-	afterBuy := roundMoney(100000 - record.Amount - record.Commission - record.StampDuty - record.TransferFee)
+	afterBuy := roundMoney(100000 - record.Amount/5 - record.Commission - record.StampDuty - record.TransferFee)
 	assertAccount(afterBuy, 0)
 	if err := cancelHongKongLimitOrderDB(db, customer.ID, order.ID, now); err == nil {
 		t.Fatal("已成交不可撤单")
@@ -288,7 +291,7 @@ func TestHongKongLimitOrderIntegration(t *testing.T) {
 		if err := db.First(&record, raceOrder.TradeRecordID).Error; err != nil {
 			t.Fatal(err)
 		}
-		assertAccount(roundMoney(before-record.Amount-record.Commission-record.StampDuty-record.TransferFee), 0)
+		assertAccount(roundMoney(before-record.Amount/5-record.Commission-record.StampDuty-record.TransferFee), 0)
 	default:
 		t.Fatal("撤单与撮合竞争后状态错误", raceOrder)
 	}

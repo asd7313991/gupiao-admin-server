@@ -6,6 +6,7 @@
 ## 后端文档
 - `backend/config.md`：记录配置加载架构、Viper/环境变量约定及安全校验要求，修改 `config` 包或 `config.yaml` 前必读。
 - `backend/admin-layering.md`：记录 admin 模块的 api/domain 分层规范、错误映射与测试约定，修改 `admin` 接口前必读。
+- [融资与持仓口径](../README.md)：A股/港股新单固定5倍、总担保金与追加担保分开、旧仓旧委托兼容及港币独立风险结算；修改交易结算前必读。
 
 ## 当前任务文档
 - 暂无

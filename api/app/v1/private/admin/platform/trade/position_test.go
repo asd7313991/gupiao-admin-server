@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 )
 
 func TestCalculateForceCloseSettlement(t *testing.T) {
@@ -61,5 +62,11 @@ func TestHongKongPositionQuoteSymbol(t *testing.T) {
 	amount, realized, settlement := calculateForceCloseSettlement(position, 36)
 	if amount != 36000 || realized != 500 || settlement != 36000 {
 		t.Fatalf("港币全额结算 amount=%v realized=%v settlement=%v", amount, realized, settlement)
+	}
+	position.Symbol, position.Leverage, position.Margin = "03774.HK", 5, 8000
+	positionbasis.SetSupplementalMargin(&position, 900)
+	amount, realized, settlement = calculateForceCloseSettlement(position, 36)
+	if amount != 36000 || realized != 500 || settlement != 8500 {
+		t.Fatalf("港股5倍强平只返7100本金+900追加+500盈亏：%v/%v/%v", amount, realized, settlement)
 	}
 }

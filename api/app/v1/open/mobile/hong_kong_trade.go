@@ -28,6 +28,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/hkquote"
+	"api-server/util/positionbasis"
 )
 
 type hongKongQuote struct {
@@ -362,13 +363,14 @@ func HongKongTradeQuote(c *gin.Context) {
 		reason = "当前不在港股模拟交易时段（09:30–12:00、13:00–16:00）"
 	}
 	limitReason := validateHongKongLimitMetadata(quote, security, settings, now)
-	response.ReturnData(c, gin.H{"quote": quote, "tradable": reason == "", "reason": reason, "balance": customer.HKDBalance, "fees": settings.HKTrade, "local_close_test": closeTest, "close_price_simulation": closeSimulation, "limit_order_allowed": limitReason == "", "limit_order_reason": limitReason})
+	response.ReturnData(c, gin.H{"quote": quote, "tradable": reason == "", "reason": reason, "balance": customer.HKDBalance, "leverage": positionbasis.FinancingLeverage, "fees": settings.HKTrade, "local_close_test": closeTest, "close_price_simulation": closeSimulation, "limit_order_allowed": limitReason == "", "limit_order_reason": limitReason})
 }
 
 type hongKongOrderInput struct {
 	orderInput
-	RequestID    string `json:"request_id"`
-	LimitOrderID uint   `json:"-"`
+	RequestID     string  `json:"request_id"`
+	LimitOrderID  uint    `json:"-"`
+	OrderLeverage float64 `json:"-"`
 }
 
 func PlaceHongKongOrder(c *gin.Context) {
@@ -501,21 +503,45 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		return result, exchangeRejection("持仓币种异常，请联系管理员")
 	}
 	before := customer.HKDBalance
+	leverage := positionbasis.FinancingLeverage
+	if input.LimitOrderID > 0 {
+		leverage = input.OrderLeverage
+		if leverage == 0 {
+			leverage = 1 // 旧港股挂单没有融资快照，仍按原全额规则成交。
+		}
+		if leverage != 1 && leverage != positionbasis.FinancingLeverage {
+			return result, exchangeRejection("港股委托杠杆快照无效")
+		}
+	}
 	var realizedProfit, realizedCost *float64
 	if input.Direction == "买入" {
-		if customer.HKDBalance < roundMoney(amount+totalFee) {
-			return result, exchangeRejection("港币余额不足（成交额及手续费均从港币账户扣除）")
+		if found == nil && position.PositionQty > 0 && positionLeverage(position) != leverage {
+			return result, exchangeRejection("该持仓尚未完成5倍融资转换或与原委托杠杆不一致，暂不支持加仓")
+		}
+		if found == nil && position.PositionQty > 0 && position.Status != system.StatusEnabled {
+			return result, exchangeRejection("港股持仓状态异常，请先核对账务")
+		}
+		margin := positionbasis.BuyMargin(amount, leverage, positionbasis.Actual)
+		if margin <= 0 {
+			return result, exchangeRejection("买入本金不足0.01 HKD，请调整数量")
+		}
+		if customer.HKDBalance < roundMoney(margin+totalFee) {
+			return result, exchangeRejection("港币余额不足（融资本金及按完整成交额计算的手续费均从港币账户扣除）")
 		}
 		if errors.Is(found, gorm.ErrRecordNotFound) {
 			position = system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", BuyAt: now.Unix()}
 		}
-		customer.HKDBalance = roundMoney(customer.HKDBalance - amount - totalFee)
+		customer.HKDBalance = roundMoney(customer.HKDBalance - margin - totalFee)
+		_, supplemental := positionbasis.MarginParts(position)
 		position.PositionQty += input.Quantity
 		position.AvailableQty += input.Quantity
 		position.TotalCost = roundMoney(position.TotalCost + amount)
-		position.Margin = position.TotalCost
+		position.Margin = roundMoney(position.Margin + margin)
+		positionbasis.SetSupplementalMargin(&position, supplemental)
 		position.CostPrice = position.TotalCost / position.PositionQty
 		position.Status = system.StatusEnabled
+		position.Leverage, position.QuantityBasis = leverage, positionbasis.Actual
+		position.MarginCallLevel = 0
 	} else {
 		if errors.Is(found, gorm.ErrRecordNotFound) || position.AvailableQty < input.Quantity {
 			return result, exchangeRejection("港股可卖持仓不足")
@@ -523,25 +549,41 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		if input.LimitOrderID == 0 && input.Quantity != position.AvailableQty && math.Mod(input.Quantity, quote.LotSize) != 0 {
 			return result, exchangeRejection("非全部卖出时，数量须为整手")
 		}
-		if roundMoney(customer.HKDBalance+amount-totalFee) < 0 {
-			return result, exchangeRejection("港币余额不足以支付卖出费用")
+		if positionLeverage(position) != 1 && !positionbasis.IsFinanced(position) {
+			return result, exchangeRejection("港股持仓杠杆异常，请先核对账务")
 		}
-		customer.HKDBalance = roundMoney(customer.HKDBalance + amount - totalFee)
-		removed := roundMoney(position.CostPrice * input.Quantity)
+		if input.LimitOrderID > 0 && positionLeverage(position) != leverage {
+			return result, exchangeRejection("港股持仓与卖出委托杠杆不一致，请撤单后重试")
+		}
+		removed, marginRemoved := position.TotalCost, position.Margin
+		_, supplemental := positionbasis.MarginParts(position)
+		supplementRemoved := supplemental
+		if input.Quantity < position.PositionQty {
+			removed = roundMoney(position.TotalCost * input.Quantity / position.PositionQty)
+			marginRemoved = roundMoney(position.Margin * input.Quantity / position.PositionQty)
+			supplementRemoved = roundMoney(supplemental * input.Quantity / position.PositionQty)
+		}
 		profit := roundMoney(amount - removed - totalFee)
+		settlement := roundMoney(marginRemoved + profit)
+		if roundMoney(customer.HKDBalance+settlement) < 0 {
+			return result, exchangeRejection("港币余额不足以结算卖出亏损及费用，请先补足港币或联系管理人员处理")
+		}
+		customer.HKDBalance = roundMoney(customer.HKDBalance + settlement)
 		realizedProfit, realizedCost = &profit, &removed
 		position.PositionQty -= input.Quantity
 		position.AvailableQty -= input.Quantity
 		position.TotalCost = math.Max(0, roundMoney(position.TotalCost-removed))
-		position.Margin = position.TotalCost
+		position.Margin = math.Max(0, roundMoney(position.Margin-marginRemoved))
+		positionbasis.SetSupplementalMargin(&position, supplemental-supplementRemoved)
 		if position.PositionQty == 0 {
 			position.TotalCost = 0
 			position.Margin = 0
+			positionbasis.SetSupplementalMargin(&position, 0)
 			position.CostPrice = 0
+			position.MarginCallLevel = 0
 			position.Status = system.StatusDisabled
 		}
 	}
-	position.Leverage = 1
 	position.CurrentPrice = quote.LastPrice
 	position.MarketValue, position.ProfitLoss, position.ProfitRate = calculatePositionValues(position.PositionQty, quote.LastPrice, position.TotalCost, 1)
 	if err := tx.Model(customer).Update("hkd_balance", customer.HKDBalance).Error; err != nil {
@@ -554,7 +596,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 		Updates(map[string]any{"last_price": quote.LastPrice, "change_rate": quote.ChangeRate, "quote_at": quote.QuoteAt, "source": quote.Source}).Error; err != nil {
 		return result, err
 	}
-	record := system.TradeRecord{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", Direction: input.Direction, TradePrice: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, Remark: fmt.Sprintf("港股市价模拟成交；来源 %s；报价时间 %s（可能延迟）", quote.Source, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05")), TradeAt: now.Unix()}
+	record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(position), CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", Direction: input.Direction, TradePrice: quote.LastPrice, Quantity: input.Quantity, Amount: amount, Commission: commission, StampDuty: stampDuty, TransferFee: transferFee, Remark: fmt.Sprintf("港股市价模拟成交；来源 %s；报价时间 %s（可能延迟）", quote.Source, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05")), TradeAt: now.Unix()}
 	record.RealizedProfit, record.RealizedCost = realizedProfit, realizedCost
 	if input.LimitOrderID > 0 {
 		record.Remark = fmt.Sprintf("港股限价委托 %d 按有效买卖盘口模拟成交（非实盘，不模拟排队或部分成交）；来源腾讯；盘口时间 %s", input.LimitOrderID, time.Unix(quote.QuoteAt, 0).In(time.FixedZone("HK", 8*3600)).Format("2006-01-02 15:04:05"))

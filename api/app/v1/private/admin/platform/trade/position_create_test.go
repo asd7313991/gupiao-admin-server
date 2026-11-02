@@ -155,6 +155,28 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 	if code != 200 || saved.Leverage != 1 || saved.Margin != 15787.45 {
 		t.Fatal("仅编辑已有持仓不能自动改成5倍")
 	}
+	if err := db.Model(&untouched).Updates(map[string]any{"margin": 16564.45, "margin_call_level": 18, "supplemental_margin": nil}).Error; err != nil {
+		t.Fatal(err)
+	}
+	untouched.Margin = 0
+	forged := 999999.0
+	untouched.SupplementalMargin = &forged
+	code, saved = save(http.MethodPut, untouched)
+	if code != 200 || saved.SupplementalMargin == nil || *saved.SupplementalMargin != 777 || saved.MarginCallLevel != 18 {
+		t.Fatal("普通编辑不能抹掉真实追加担保金、伪造追加额或重置已补仓档位", code, saved)
+	}
+	near(saved.Margin, 16564.45)
+	near(saved.BaseMargin, 15787.45)
+	untouched.CostPrice = 52.46
+	code, saved = save(http.MethodPut, untouched)
+	if code != 200 || saved.SupplementalMargin == nil || *saved.SupplementalMargin != 777 {
+		t.Fatal("人工调整成本仍须原额保留已经扣入的追加担保金")
+	}
+	near(saved.Margin, 16567.46)
+	untouched.Leverage = 5
+	if code, _ := save(http.MethodPut, untouched); code != 400 {
+		t.Fatal("不能借普通编辑跳过旧持仓融资资金转换")
+	}
 	if code, _ := save(http.MethodPost, map[string]any{
 		"phone": customer.Phone, "symbol": "09889.HK", "cost_price": 3, "position_qty": 100,
 	}); code != 400 {

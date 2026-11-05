@@ -494,8 +494,10 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 	if amount <= 0 || amount > 1_000_000_000 {
 		return result, exchangeRejection("成交金额超出模拟交易限制")
 	}
-	var position system.TradePosition
-	found := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ?", customer.ID, security.Symbol).First(&position).Error
+	position, found := lockTradingPosition(tx, customer.ID, security.Symbol, input.Direction == "买入")
+	if errors.Is(found, errMultipleOpenPositions) {
+		return result, exchangeRejection(found.Error())
+	}
 	if found != nil && !errors.Is(found, gorm.ErrRecordNotFound) {
 		return result, found
 	}

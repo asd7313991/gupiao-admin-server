@@ -137,12 +137,8 @@ func cancelCustomerPendingOrdersForMarket(tx *gorm.DB, customer *system.Customer
 			customer.FrozenBalance = roundMoney(math.Max(0, customer.FrozenBalance-order.FrozenAmount))
 			customer.Balance = roundMoney(customer.Balance + order.FrozenAmount)
 		} else {
-			var position system.TradePosition
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customerID, order.Symbol).First(&position).Error; err == nil {
-				position.AvailableQty += order.FrozenQuantity
-				if err := tx.Save(&position).Error; err != nil {
-					return err
-				}
+			if err := releaseAStockPositionFreeze(tx, *order); err != nil {
+				return err
 			}
 		}
 		order.Status, order.CancelledAt = limitOrderCancelled, cancelledAt

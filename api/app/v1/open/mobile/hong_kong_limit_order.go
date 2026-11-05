@@ -157,8 +157,10 @@ func placeHongKongLimitOrderDB(db *gorm.DB, customerID uint, security system.Sto
 		order = system.LimitOrder{QuantityBasis: positionbasis.Actual, Leverage: positionbasis.FinancingLeverage, CustomerID: customerID, RequestID: &input.RequestID, Symbol: security.Symbol, StockName: security.Name,
 			Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
 		if input.Direction == "买入" {
-			var existing system.TradePosition
-			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ?", customerID, security.Symbol).First(&existing).Error
+			existing, err := lockTradingPosition(tx, customerID, security.Symbol, false)
+			if errors.Is(err, errMultipleOpenPositions) {
+				return exchangeRejection(err.Error())
+			}
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
@@ -183,8 +185,11 @@ func placeHongKongLimitOrderDB(db *gorm.DB, customerID uint, security system.Sto
 				return err
 			}
 		} else {
-			var position system.TradePosition
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ?", customerID, security.Symbol).First(&position).Error; err != nil {
+			position, err := lockTradingPosition(tx, customerID, security.Symbol, false)
+			if errors.Is(err, errMultipleOpenPositions) {
+				return exchangeRejection(err.Error())
+			}
+			if err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return exchangeRejection("没有港股可卖持仓")
 				}
@@ -233,8 +238,8 @@ func releaseHongKongLimitFreeze(tx *gorm.DB, customer *system.Customer, order sy
 		}
 		return writeHongKongLimitFreezeFlow(tx, *customer, order, true)
 	}
-	var position system.TradePosition
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ?", customer.ID, order.Symbol).First(&position).Error; err != nil {
+	position, err := lockTradingPosition(tx, customer.ID, order.Symbol, false)
+	if err != nil {
 		return err
 	}
 	if position.Currency != "HKD" || order.FrozenQuantity != order.Quantity || position.AvailableQty+order.FrozenQuantity > position.PositionQty {

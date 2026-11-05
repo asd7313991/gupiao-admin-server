@@ -133,6 +133,7 @@ type tradeHoldingView struct {
 }
 
 var errTradeRejected = errors.New("trade rejected")
+var errMultipleOpenPositions = errors.New("同一股票存在多笔未平仓持仓，请联系管理员核对后交易")
 
 func MobileTradeSettings(c *gin.Context) {
 	settings, err := loadMobileTradeSettings()
@@ -326,12 +327,52 @@ func validateAStockTradeQuote(book orderBookView, now time.Time, limit bool) err
 	return nil
 }
 
+// 与页面一样优先查询非零持仓，不能按最早ID选中历史空仓。
+func lockTradingPosition(tx *gorm.DB, customerID uint, symbol string, reuseClosed bool) (system.TradePosition, error) {
+	var positions []system.TradePosition
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("customer_id = ? AND symbol = ? AND position_qty > 0", customerID, symbol).
+		Order("id ASC").Limit(2).Find(&positions).Error; err != nil {
+		return system.TradePosition{}, err
+	}
+	if len(positions) > 1 {
+		return system.TradePosition{}, errMultipleOpenPositions
+	}
+	if len(positions) == 1 {
+		return positions[0], nil
+	}
+	if !reuseClosed {
+		return system.TradePosition{}, gorm.ErrRecordNotFound
+	}
+	var closed system.TradePosition
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("customer_id = ? AND symbol = ? AND position_qty = 0", customerID, symbol).
+		Order("id DESC").First(&closed).Error
+	return closed, err
+}
+
+func releaseAStockPositionFreeze(tx *gorm.DB, order system.LimitOrder) error {
+	position, err := lockTradingPosition(tx, order.CustomerID, order.Symbol, false)
+	if err != nil {
+		return err
+	}
+	if order.FrozenQuantity <= 0 || order.FrozenQuantity != order.Quantity ||
+		position.AvailableQty+order.FrozenQuantity > position.PositionQty {
+		return fmt.Errorf("卖出委托冻结持仓异常，未执行解冻")
+	}
+	position.AvailableQty += order.FrozenQuantity
+	return tx.Save(&position).Error
+}
+
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string, orders ...system.LimitOrder) error {
 	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security, input.Quantity, input.Direction, settings)
 	var realizedProfit, realizedCost *float64
 
-	var position system.TradePosition
-	positionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error
+	position, positionErr := lockTradingPosition(tx, customer.ID, security.Symbol, input.Direction == "买入")
+	if errors.Is(positionErr, errMultipleOpenPositions) {
+		*rejection = positionErr.Error()
+		return errTradeRejected
+	}
 	if positionErr != nil && !errors.Is(positionErr, gorm.ErrRecordNotFound) {
 		return positionErr
 	}

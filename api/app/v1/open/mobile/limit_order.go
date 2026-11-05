@@ -132,9 +132,11 @@ func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.Stock
 		order = system.LimitOrder{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Direction: input.Direction, LimitPrice: input.LimitPrice, Quantity: input.Quantity, Status: limitOrderPending}
 		if input.Direction == "买入" {
 			order.QuantityBasis, order.Leverage = positionbasis.Actual, effectiveLeverage(settings)
-			var existing system.TradePosition
-			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-				Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&existing).Error
+			existing, err := lockTradingPosition(tx, customer.ID, security.Symbol, false)
+			if errors.Is(err, errMultipleOpenPositions) {
+				rejection = err.Error()
+				return errTradeRejected
+			}
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
@@ -159,8 +161,12 @@ func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.Stock
 				return err
 			}
 		} else {
-			var position system.TradePosition
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, security.Symbol).First(&position).Error; err != nil {
+			position, err := lockTradingPosition(tx, customer.ID, security.Symbol, false)
+			if errors.Is(err, errMultipleOpenPositions) {
+				rejection = err.Error()
+				return errTradeRejected
+			}
+			if err != nil {
 				if !errors.Is(err, gorm.ErrRecordNotFound) {
 					return err
 				}
@@ -354,12 +360,7 @@ func fillAStockLimitOrder(tx *gorm.DB, order *system.LimitOrder, security system
 		customer.FrozenBalance = roundMoney(customer.FrozenBalance - order.FrozenAmount)
 		customer.Balance = roundMoney(customer.Balance + order.FrozenAmount)
 	} else {
-		var position system.TradePosition
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", customer.ID, order.Symbol).First(&position).Error; err != nil {
-			return false, err
-		}
-		position.AvailableQty += order.FrozenQuantity
-		if err := tx.Save(&position).Error; err != nil {
+		if err := releaseAStockPositionFreeze(tx, *order); err != nil {
 			return false, err
 		}
 	}
@@ -434,12 +435,7 @@ func releaseLimitOrderFreeze(tx *gorm.DB, order *system.LimitOrder) error {
 		customer.Balance = roundMoney(customer.Balance + order.FrozenAmount)
 		return tx.Save(&customer).Error
 	}
-	var position system.TradePosition
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("customer_id = ? AND symbol = ? AND deleted_at IS NULL", order.CustomerID, order.Symbol).First(&position).Error; err != nil {
-		return err
-	}
-	position.AvailableQty += order.FrozenQuantity
-	return tx.Save(&position).Error
+	return releaseAStockPositionFreeze(tx, *order)
 }
 
 func toLimitOrderView(order system.LimitOrder) limitOrderView {

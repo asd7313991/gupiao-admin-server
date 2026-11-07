@@ -28,6 +28,20 @@ func TestRechargeListResponseFields(t *testing.T) {
 	assertRechargeResponse(t, row)
 }
 
+func TestManualRecordTime(t *testing.T) {
+	now := time.Date(2026, 11, 7, 21, 0, 0, 0, time.UTC)
+
+	if recordTime, err := manualRecordTime(0, now); err != nil || !recordTime.IsZero() {
+		t.Fatalf("未填写申请时间应使用创建时刻：time=%v err=%v", recordTime, err)
+	}
+	if recordTime, err := manualRecordTime(now.Add(-time.Hour).Unix(), now); err != nil || !recordTime.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("历史申请时间应被保留：time=%v err=%v", recordTime, err)
+	}
+	if _, err := manualRecordTime(now.Add(6*time.Minute).Unix(), now); err == nil {
+		t.Fatal("未来申请时间必须被拒绝")
+	}
+}
+
 func assertRechargeResponse(t *testing.T, row rechargeResponse) {
 	t.Helper()
 	recorder := httptest.NewRecorder()

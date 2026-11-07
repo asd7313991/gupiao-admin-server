@@ -39,6 +39,26 @@ type withdrawalResponse struct {
 	CustomerPhone string `json:"customer_phone"`
 }
 
+type rechargeInput struct {
+	system.FinanceRecharge
+	RecordedAt int64 `json:"recorded_at"`
+}
+
+type withdrawalInput struct {
+	system.FinanceWithdrawal
+	RecordedAt int64 `json:"recorded_at"`
+}
+
+func manualRecordTime(recordedAt int64, now time.Time) (time.Time, error) {
+	if recordedAt == 0 {
+		return time.Time{}, nil
+	}
+	if recordedAt < 1 || recordedAt > now.Add(5*time.Minute).Unix() {
+		return time.Time{}, fmt.Errorf("申请时间无效")
+	}
+	return time.Unix(recordedAt, 0), nil
+}
+
 func ListRecharges(c *gin.Context) {
 	page, size := middleware.GetPage(c), middleware.GetPageSize(c)
 	if page < 1 {
@@ -101,10 +121,11 @@ func ListWithdrawals(c *gin.Context) {
 }
 
 func SaveRecharge(c *gin.Context) {
-	var input system.FinanceRecharge
-	if !middleware.CheckParam(&input, c) {
+	var request rechargeInput
+	if !middleware.CheckParam(&request, c) {
 		return
 	}
+	input := request.FinanceRecharge
 	if input.CustomerID == 0 || input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和充值金额为必填项")
 		return
@@ -113,7 +134,7 @@ func SaveRecharge(c *gin.Context) {
 		input.Currency = "CNY"
 	}
 	if input.Method == "" {
-		input.Method = "支付宝转账"
+		input.Method = "银转证"
 	}
 	if input.ID == 0 {
 		if input.Currency != "CNY" && input.Currency != "HKD" {
@@ -136,6 +157,14 @@ func SaveRecharge(c *gin.Context) {
 		if count != 1 {
 			response.ReturnError(c, response.NOT_FOUND, "充值客户不存在")
 			return
+		}
+		recordTime, err := manualRecordTime(request.RecordedAt, time.Now())
+		if err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
+			return
+		}
+		if !recordTime.IsZero() {
+			input.CreatedAt = recordTime
 		}
 		if err := pgdb.GetClient().Create(&input).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "添加充值记录失败")
@@ -218,8 +247,12 @@ func reviewRecharge(tx *gorm.DB, id uint, status uint, reason, remark string) (s
 }
 
 func SaveWithdrawal(c *gin.Context) {
-	var input system.FinanceWithdrawal
-	if !middleware.CheckParam(&input, c) || input.CustomerID == 0 || input.Amount <= 0 {
+	var request withdrawalInput
+	if !middleware.CheckParam(&request, c) {
+		return
+	}
+	input := request.FinanceWithdrawal
+	if input.CustomerID == 0 || input.Amount <= 0 {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和提现金额为必填项")
 		return
 	}
@@ -232,6 +265,14 @@ func SaveWithdrawal(c *gin.Context) {
 	if input.ID == 0 {
 		if input.Status == 0 {
 			input.Status = system.StatusDisabled
+		}
+		recordTime, err := manualRecordTime(request.RecordedAt, time.Now())
+		if err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
+			return
+		}
+		if !recordTime.IsZero() {
+			input.CreatedAt = recordTime
 		}
 		if err := pgdb.GetClient().Create(&input).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "添加提现申请失败")

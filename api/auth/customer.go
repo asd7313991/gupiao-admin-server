@@ -11,16 +11,18 @@ import (
 )
 
 type CustomerClaims struct {
-	CustomerID uint   `json:"customer_id"`
-	Phone      string `json:"phone"`
+	CustomerID     uint   `json:"customer_id"`
+	Phone          string `json:"phone"`
+	SessionVersion uint   `json:"session_version"`
 	jwt.RegisteredClaims
 }
 
-func CustomerJWTIssue(customerID uint, phone string) (string, error) {
+func CustomerJWTIssue(customerID uint, phone string, sessionVersion uint) (string, error) {
 	now := time.Now()
 	claims := CustomerClaims{
-		CustomerID: customerID,
-		Phone:      phone,
+		CustomerID:     customerID,
+		Phone:          phone,
+		SessionVersion: sessionVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "customer",
 			ExpiresAt: jwt.NewNumericDate(now.Add(config.JWTExpiration)),

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"api-server/api/auth"
 	"api-server/api/middleware"
@@ -92,7 +93,22 @@ func Login(c *gin.Context) {
 }
 
 func returnAuth(c *gin.Context, item system.Customer) {
-	token, err := auth.CustomerJWTIssue(item.ID, item.Phone)
+	var sessionVersion uint
+	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+		var customer system.Customer
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "session_version").
+			First(&customer, item.ID).Error; err != nil {
+			return err
+		}
+		sessionVersion = customer.SessionVersion + 1
+		return tx.Model(&customer).Update("session_version", sessionVersion).Error
+	})
+	if err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "更新登录会话失败，请稍后重试")
+		return
+	}
+	token, err := auth.CustomerJWTIssue(item.ID, item.Phone, sessionVersion)
 	if err != nil {
 		response.ReturnError(c, response.INTERNAL, "登录失败，请稍后重试")
 		return

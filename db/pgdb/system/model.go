@@ -144,6 +144,7 @@ type Customer struct {
 	Status                uint    `json:"status" gorm:"default:1"`
 	FundStatus            uint    `json:"fund_status" gorm:"default:1"`
 	Verified              uint    `json:"verified" gorm:"default:2"`
+	SessionVersion        uint    `json:"-" gorm:"not null;default:0"`
 	IDCardFront           string  `json:"id_card_front"`
 	IDCardBack            string  `json:"id_card_back"`
 	VerificationVideo     string  `json:"verification_video"`

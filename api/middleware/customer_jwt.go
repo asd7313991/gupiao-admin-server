@@ -23,8 +23,12 @@ func CustomerTokenVerify(c *gin.Context) {
 		return
 	}
 	var customer system.Customer
-	if err := pgdb.GetClient().Select("id").First(&customer, claims.CustomerID).Error; err != nil {
+	if err := pgdb.GetClient().Select("id", "session_version").First(&customer, claims.CustomerID).Error; err != nil {
 		response.ReturnError(c, response.UNAUTHENTICATED, "账户不存在或已被删除，请重新登录")
+		return
+	}
+	if customer.SessionVersion != claims.SessionVersion {
+		response.ReturnError(c, response.UNAUTHENTICATED, "账号已在其他设备登录，请重新登录")
 		return
 	}
 	c.Set("customer_id", claims.CustomerID)

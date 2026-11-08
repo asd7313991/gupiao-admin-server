@@ -41,7 +41,8 @@ type withdrawalResponse struct {
 
 type rechargeInput struct {
 	system.FinanceRecharge
-	RecordedAt int64 `json:"recorded_at"`
+	CustomerPhone string `json:"customer_phone"`
+	RecordedAt    int64  `json:"recorded_at"`
 }
 
 type withdrawalInput struct {
@@ -127,8 +128,8 @@ func SaveRecharge(c *gin.Context) {
 		return
 	}
 	input := request.FinanceRecharge
-	if input.CustomerID == 0 || input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和充值金额为必填项")
+	if input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "充值金额为必填项")
 		return
 	}
 	if input.Currency == "" {
@@ -146,18 +147,24 @@ func SaveRecharge(c *gin.Context) {
 			response.ReturnError(c, response.INVALID_ARGUMENT, "新增充值记录须先待审核，再执行通过或失败")
 			return
 		}
+		phone := strings.TrimSpace(request.CustomerPhone)
+		if phone == "" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "客户手机号为必填项")
+			return
+		}
+		var customer system.Customer
+		if err := pgdb.GetClient().Where("phone = ?", phone).First(&customer).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				response.ReturnError(c, response.NOT_FOUND, "充值客户不存在")
+				return
+			}
+			response.ReturnError(c, response.DATA_LOSS, "查询充值客户失败")
+			return
+		}
+		input.CustomerID = customer.ID
 		input.Status, input.ReviewedAt, input.FailureReason = system.StatusDisabled, 0, ""
 		if input.RequestID == "" {
 			input.RequestID = fmt.Sprintf("ADMIN-R-%d", time.Now().UnixNano())
-		}
-		var count int64
-		if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", input.CustomerID).Count(&count).Error; err != nil {
-			response.ReturnError(c, response.DATA_LOSS, "读取充值客户失败")
-			return
-		}
-		if count != 1 {
-			response.ReturnError(c, response.NOT_FOUND, "充值客户不存在")
-			return
 		}
 		recordTime, err := manualRecordTime(request.RecordedAt, time.Now())
 		if err != nil {

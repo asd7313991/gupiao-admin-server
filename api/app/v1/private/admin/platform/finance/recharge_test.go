@@ -79,12 +79,12 @@ func TestSaveRechargeRejectsInvalidInput(t *testing.T) {
 	for _, tc := range []struct {
 		body, message string
 	}{
-		{`{"customer_id":1,"amount":10,"status":1}`, "新增充值记录须先待审核"},
-		{`{"customer_id":1,"amount":10,"status":3}`, "新增充值记录须先待审核"},
-		{`{"customer_id":1,"amount":10,"currency":"USD"}`, "充值币种仅支持"},
+		{`{"customer_phone":"13900000001","amount":10,"status":1}`, "新增充值记录须先待审核"},
+		{`{"customer_phone":"13900000001","amount":10,"status":3}`, "新增充值记录须先待审核"},
+		{`{"customer_phone":"13900000001","amount":10,"currency":"USD"}`, "充值币种仅支持"},
 		{`{"id":1,"customer_id":1,"amount":10,"status":2}`, "请选择通过或失败"},
 		{`{"id":1,"customer_id":1,"amount":10,"status":3,"failure_reason":" "}`, "请填写充值失败原因"},
-		{`{"customer_id":1,"amount":-1}`, "客户和充值金额为必填项"},
+		{`{"amount":-1}`, "充值金额为必填项"},
 	} {
 		recorder := httptest.NewRecorder()
 		context, _ := gin.CreateTestContext(recorder)
@@ -101,6 +101,25 @@ func TestSaveRechargeRejectsInvalidInput(t *testing.T) {
 		if result.Code == 200 || !strings.Contains(result.Message, tc.message) {
 			t.Fatalf("应拒绝%s，实际%s", tc.body, recorder.Body.String())
 		}
+	}
+}
+
+func TestSaveRechargeRequiresCustomerPhone(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"amount":10}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	SaveRecharge(context)
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code == 200 || !strings.Contains(result.Message, "客户手机号为必填项") {
+		t.Fatalf("新增充值记录应要求客户手机号，实际%s", recorder.Body.String())
 	}
 }
 

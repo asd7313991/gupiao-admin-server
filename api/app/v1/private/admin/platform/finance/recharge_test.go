@@ -104,6 +104,25 @@ func TestSaveRechargeRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestSaveWithdrawalRequiresCustomerPhone(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"amount":10}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	SaveWithdrawal(context)
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code == 200 || !strings.Contains(result.Message, "客户手机号为必填项") {
+		t.Fatalf("新增提现记录应要求客户手机号，实际%s", recorder.Body.String())
+	}
+}
+
 func TestValidateRechargeReview(t *testing.T) {
 	for _, tc := range []struct {
 		status uint

@@ -46,7 +46,8 @@ type rechargeInput struct {
 
 type withdrawalInput struct {
 	system.FinanceWithdrawal
-	RecordedAt int64 `json:"recorded_at"`
+	CustomerPhone string `json:"customer_phone"`
+	RecordedAt    int64  `json:"recorded_at"`
 }
 
 func manualRecordTime(recordedAt int64, now time.Time) (time.Time, error) {
@@ -252,8 +253,8 @@ func SaveWithdrawal(c *gin.Context) {
 		return
 	}
 	input := request.FinanceWithdrawal
-	if input.CustomerID == 0 || input.Amount <= 0 {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "客户和提现金额为必填项")
+	if input.Amount <= 0 || math.IsNaN(input.Amount) || math.IsInf(input.Amount, 0) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "提现金额为必填项")
 		return
 	}
 	if input.Currency == "" {
@@ -263,6 +264,28 @@ func SaveWithdrawal(c *gin.Context) {
 		input.Method = "银行卡"
 	}
 	if input.ID == 0 {
+		phone := strings.TrimSpace(request.CustomerPhone)
+		if phone == "" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "客户手机号为必填项")
+			return
+		}
+		var customer system.Customer
+		if err := pgdb.GetClient().Where("phone = ?", phone).First(&customer).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				response.ReturnError(c, response.NOT_FOUND, "客户不存在")
+				return
+			}
+			response.ReturnError(c, response.DATA_LOSS, "查询提现客户失败")
+			return
+		}
+		if strings.TrimSpace(customer.BankName) == "" || strings.TrimSpace(customer.BankCard) == "" || strings.TrimSpace(customer.BankAddress) == "" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "客户未配置完整的开户行、银行卡号或开户地址")
+			return
+		}
+		input.CustomerID = customer.ID
+		input.BankName = customer.BankName
+		input.BankCard = customer.BankCard
+		input.BankAddress = customer.BankAddress
 		if input.Status == 0 {
 			input.Status = system.StatusDisabled
 		}

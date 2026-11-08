@@ -175,7 +175,7 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 	near(saved.Margin, 16567.46)
 	untouched.Leverage = 5
 	if code, _ := save(http.MethodPut, untouched); code != 400 {
-		t.Fatal("不能借普通编辑跳过旧持仓融资资金转换")
+		t.Fatal("不能借普通编辑跳过旧持仓孖展资金转换")
 	}
 	if code, _ := save(http.MethodPost, map[string]any{
 		"phone": customer.Phone, "symbol": "09889.HK", "cost_price": 3, "position_qty": 100,

@@ -509,7 +509,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 	if input.LimitOrderID > 0 {
 		leverage = input.OrderLeverage
 		if leverage == 0 {
-			leverage = 1 // 旧港股挂单没有融资快照，仍按原全额规则成交。
+			leverage = 1 // 旧港股挂单没有孖展快照，仍按原全额规则成交。
 		}
 		if leverage != 1 && leverage != positionbasis.FinancingLeverage {
 			return result, exchangeRejection("港股委托杠杆快照无效")
@@ -518,7 +518,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 	var realizedProfit, realizedCost *float64
 	if input.Direction == "买入" {
 		if found == nil && position.PositionQty > 0 && positionLeverage(position) != leverage {
-			return result, exchangeRejection("该持仓尚未完成5倍融资转换或与原委托杠杆不一致，暂不支持加仓")
+			return result, exchangeRejection("该持仓尚未完成5倍孖展转换或与原委托杠杆不一致，暂不支持加仓")
 		}
 		if found == nil && position.PositionQty > 0 && position.Status != system.StatusEnabled {
 			return result, exchangeRejection("港股持仓状态异常，请先核对账务")
@@ -528,7 +528,7 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 			return result, exchangeRejection("买入本金不足0.01 HKD，请调整数量")
 		}
 		if customer.HKDBalance < roundMoney(margin+totalFee) {
-			return result, exchangeRejection("港币余额不足（融资本金及按完整成交额计算的手续费均从港币账户扣除）")
+			return result, exchangeRejection("港币余额不足（孖展本金及按完整成交额计算的手续费均从港币账户扣除）")
 		}
 		if errors.Is(found, gorm.ErrRecordNotFound) {
 			position = system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "HKD", BuyAt: now.Unix()}

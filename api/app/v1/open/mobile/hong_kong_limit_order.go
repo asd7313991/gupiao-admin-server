@@ -165,7 +165,7 @@ func placeHongKongLimitOrderDB(db *gorm.DB, customerID uint, security system.Sto
 				return err
 			}
 			if err == nil && existing.PositionQty > 0 && (!positionbasis.IsFinanced(existing) || existing.Status != system.StatusEnabled || existing.Currency != "HKD") {
-				return exchangeRejection("该持仓尚未完成5倍融资转换或状态异常，暂不支持新增买入挂单")
+				return exchangeRejection("该持仓尚未完成5倍孖展转换或状态异常，暂不支持新增买入挂单")
 			}
 			if math.Mod(input.Quantity, quote.LotSize) != 0 {
 				return exchangeRejection(fmt.Sprintf("该港股每手 %.0f 股，买入数量必须为整手", quote.LotSize))

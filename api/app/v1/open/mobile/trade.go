@@ -390,7 +390,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 	}
 	if input.Direction == "买入" {
 		if len(orders) == 0 && positionErr == nil && position.PositionQty > 0 && (!positionbasis.IsFinanced(position) || position.Status != system.StatusEnabled) {
-			*rejection = "该持仓尚未完成5倍融资转换，暂不支持加仓；原持仓仍可按原规则卖出"
+			*rejection = "该持仓尚未完成5倍孖展转换，暂不支持加仓；原持仓仍可按原规则卖出"
 			return errTradeRejected
 		}
 		leverage := effectiveLeverage(settings)

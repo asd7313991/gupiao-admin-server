@@ -19,7 +19,7 @@ func financingTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("POSITION_BASIS_TEST_DSN")
 	if dsn == "" {
-		t.Skip("未配置独立融资测试数据库")
+		t.Skip("未配置独立孖展测试数据库")
 	}
 	root, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestFinancingMarginLifecycle(t *testing.T) {
 			db := financingTestDB(t)
 			now := time.Date(2026, 11, 2, 11, 0, 0, 0, time.FixedZone("HK", 8*3600))
 			customer := system.Customer{Phone: "financing-lifecycle", Balance: 10000, HKDBalance: 10000, Status: 1, FundStatus: 1, Verified: 1}
-			stock := system.StockSecurity{Code: "000001", Symbol: "000001.SZ", Name: "融资测试", LastPrice: 10, Status: 1}
+			stock := system.StockSecurity{Code: "000001", Symbol: "000001.SZ", Name: "孖展测试", LastPrice: 10, Status: 1}
 			if market == "HK" {
 				stock.Code, stock.Symbol, stock.Market = "02348", "02348.HK", "港股"
 			}

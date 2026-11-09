@@ -34,9 +34,23 @@ type rechargeResponse struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 type withdrawalResponse struct {
-	system.FinanceWithdrawal
+	ID            uint      `json:"id"`
+	RequestID     string    `json:"request_id"`
+	CustomerID    uint      `json:"customer_id"`
 	CustomerName  string `json:"customer_name"`
 	CustomerPhone string `json:"customer_phone"`
+	Amount        float64   `json:"amount"`
+	Currency      string    `json:"currency"`
+	Method        string    `json:"method"`
+	BankName      string    `json:"bank_name"`
+	BankCard      string    `json:"bank_card"`
+	BankAddress   string    `json:"bank_address"`
+	Status        uint      `json:"status"`
+	Remark        string    `json:"remark"`
+	FailureReason string    `json:"failure_reason"`
+	ReviewedAt    int64     `json:"reviewed_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type rechargeInput struct {

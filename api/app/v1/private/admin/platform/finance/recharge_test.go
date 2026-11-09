@@ -28,6 +28,42 @@ func TestRechargeListResponseFields(t *testing.T) {
 	assertRechargeResponse(t, row)
 }
 
+func TestWithdrawalListResponseFields(t *testing.T) {
+	row := withdrawalResponse{
+		ID: 23, RequestID: "W-test", CustomerID: 67, CustomerName: "测试提现客户", CustomerPhone: "13900000002",
+		Amount: 2345.67, Currency: "CNY", Method: "证转银", BankName: "测试银行", BankCard: "6222000000000000",
+		BankAddress: "测试支行", Status: 2, Remark: "测试备注", FailureReason: "", ReviewedAt: 0,
+		CreatedAt: time.Unix(1793170000, 0),
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	response.ReturnData(context, gin.H{"records": []withdrawalResponse{row}, "total": 1})
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			Records []map[string]any `json:"records"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code != 200 || len(result.Data.Records) != 1 {
+		t.Fatalf("提现列表响应无效：%s", recorder.Body.String())
+	}
+	fields := result.Data.Records[0]
+	for name, expected := range map[string]any{
+		"id": float64(row.ID), "customer_id": float64(row.CustomerID), "amount": row.Amount,
+		"currency": row.Currency, "method": row.Method, "status": float64(row.Status),
+		"request_id": row.RequestID, "customer_name": row.CustomerName, "customer_phone": row.CustomerPhone,
+		"bank_name": row.BankName, "bank_card": row.BankCard, "bank_address": row.BankAddress,
+		"created_at": float64(row.CreatedAt.Unix()), "reviewed_at": float64(row.ReviewedAt),
+	} {
+		if fields[name] != expected {
+			t.Errorf("列表顶层字段%s应为%v，实际%v；完整响应%s", name, expected, fields[name], recorder.Body.String())
+		}
+	}
+}
+
 func TestManualRecordTime(t *testing.T) {
 	now := time.Date(2026, 11, 7, 21, 0, 0, 0, time.UTC)
 

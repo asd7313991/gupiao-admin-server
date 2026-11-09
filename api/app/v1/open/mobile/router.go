@@ -30,6 +30,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	account.GET("/watchlist/:code", WatchlistStatus)
 	account.POST("/watchlist", AddWatchlist)
 	account.DELETE("/watchlist/:code", DeleteWatchlist)
+	account.GET("/notices", ListCustomerNotices)
 	account.GET("/trade/settings", MobileTradeSettings)
 	account.GET("/trade/hong-kong/quote/:code", HongKongTradeQuote)
 	account.POST("/trade/hong-kong/orders", PlaceHongKongOrder)

@@ -285,8 +285,8 @@ func SaveWithdrawal(c *gin.Context) {
 			response.ReturnError(c, response.DATA_LOSS, "查询提现客户失败")
 			return
 		}
-		if strings.TrimSpace(customer.BankName) == "" || strings.TrimSpace(customer.BankCard) == "" || strings.TrimSpace(customer.BankAddress) == "" {
-			response.ReturnError(c, response.INVALID_ARGUMENT, "客户未配置完整的开户行、银行卡号或开户地址")
+		if strings.TrimSpace(customer.BankName) == "" || strings.TrimSpace(customer.BankCard) == "" {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "客户未配置完整的开户行或银行卡号")
 			return
 		}
 		input.CustomerID = customer.ID

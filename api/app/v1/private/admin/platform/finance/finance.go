@@ -285,6 +285,10 @@ func SaveWithdrawal(c *gin.Context) {
 		input.Method = "银行卡"
 	}
 	if input.ID == 0 {
+		if input.Status != 0 && input.Status != system.StatusDisabled {
+			response.ReturnError(c, response.INVALID_ARGUMENT, "新增提现记录须先待审核，再执行通过或失败")
+			return
+		}
 		phone := strings.TrimSpace(request.CustomerPhone)
 		if phone == "" {
 			response.ReturnError(c, response.INVALID_ARGUMENT, "客户手机号为必填项")
@@ -307,9 +311,7 @@ func SaveWithdrawal(c *gin.Context) {
 		input.BankName = customer.BankName
 		input.BankCard = customer.BankCard
 		input.BankAddress = customer.BankAddress
-		if input.Status == 0 {
-			input.Status = system.StatusDisabled
-		}
+		input.Status, input.ReviewedAt, input.FailureReason = system.StatusDisabled, 0, ""
 		recordTime, err := manualRecordTime(request.RecordedAt, time.Now())
 		if err != nil {
 			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())

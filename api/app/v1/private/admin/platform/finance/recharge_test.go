@@ -178,6 +178,25 @@ func TestSaveWithdrawalRequiresCustomerPhone(t *testing.T) {
 	}
 }
 
+func TestSaveWithdrawalRejectsProcessedCreateStatus(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"customer_phone":"13900000001","amount":10,"status":1}`))
+	context.Request.Header.Set("Content-Type", "application/json")
+	SaveWithdrawal(context)
+
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Code == 200 || !strings.Contains(result.Message, "新增提现记录须先待审核") {
+		t.Fatalf("新增提现记录不能直接标记为已处理，实际%s", recorder.Body.String())
+	}
+}
+
 func TestValidateRechargeReview(t *testing.T) {
 	for _, tc := range []struct {
 		status uint

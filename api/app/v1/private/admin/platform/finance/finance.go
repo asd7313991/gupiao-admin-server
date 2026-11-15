@@ -372,24 +372,39 @@ func reviewWithdrawal(tx *gorm.DB, id uint, status uint, reason, remark string) 
 	if current.Amount <= 0 || math.IsNaN(current.Amount) || math.IsInf(current.Amount, 0) {
 		return current, fmt.Errorf("提现记录金额无效，不能审核")
 	}
-	if status == system.StatusEnabled {
+	if status == system.StatusEnabled || (status == 3 && isLegacyFrozenWithdrawal(current)) {
 		var customer system.Customer
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, current.CustomerID).Error; err != nil {
 			return current, err
 		}
-		field, balance := "balance", customer.Balance
-		if current.Currency == "HKD" {
-			field, balance = "hkd_balance", customer.HKDBalance
-		}
-		if balance < current.Amount {
-			return current, fmt.Errorf("客户可用余额不足，无法通过提现审核")
-		}
-		balance = math.Round((balance-current.Amount)*100) / 100
-		if err := tx.Model(&customer).Update(field, balance).Error; err != nil {
-			return current, err
-		}
-		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "证转银", Direction: "出账", Currency: current.Currency, Amount: current.Amount, Balance: balance, Remark: "证转银审核完成"}).Error; err != nil {
-			return current, err
+		if isLegacyFrozenWithdrawal(current) && customer.FrozenBalance >= current.Amount {
+			customer.FrozenBalance = math.Round((customer.FrozenBalance-current.Amount)*100) / 100
+			if status == 3 {
+				customer.Balance = math.Round((customer.Balance+current.Amount)*100) / 100
+			}
+			if err := tx.Save(&customer).Error; err != nil {
+				return current, err
+			}
+			if status == system.StatusEnabled {
+				if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "证转银", Direction: "出账", Currency: current.Currency, Amount: current.Amount, Balance: customer.Balance, Remark: "证转银审核完成"}).Error; err != nil {
+					return current, err
+				}
+			}
+		} else if status == system.StatusEnabled {
+			field, balance := "balance", customer.Balance
+			if current.Currency == "HKD" {
+				field, balance = "hkd_balance", customer.HKDBalance
+			}
+			if balance < current.Amount {
+				return current, fmt.Errorf("客户可用余额不足，无法通过提现审核")
+			}
+			balance = math.Round((balance-current.Amount)*100) / 100
+			if err := tx.Model(&customer).Update(field, balance).Error; err != nil {
+				return current, err
+			}
+			if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "证转银", Direction: "出账", Currency: current.Currency, Amount: current.Amount, Balance: balance, Remark: "证转银审核完成"}).Error; err != nil {
+				return current, err
+			}
 		}
 	}
 	current.Status, current.ReviewedAt, current.Remark = status, time.Now().Unix(), strings.TrimSpace(remark)
@@ -398,4 +413,8 @@ func reviewWithdrawal(tx *gorm.DB, id uint, status uint, reason, remark string) 
 		current.FailureReason = strings.TrimSpace(reason)
 	}
 	return current, tx.Save(&current).Error
+}
+
+func isLegacyFrozenWithdrawal(withdrawal system.FinanceWithdrawal) bool {
+	return strings.HasPrefix(withdrawal.RequestID, "W") && !strings.HasPrefix(withdrawal.RequestID, "WNF")
 }

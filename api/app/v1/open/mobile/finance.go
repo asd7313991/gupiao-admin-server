@@ -139,7 +139,7 @@ func RequestWithdrawal(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		record = system.FinanceWithdrawal{RequestID: "W" + token, CustomerID: item.ID, Amount: input.Amount, Currency: "CNY", Method: "证转银", BankName: item.BankName, BankCard: item.BankCard, BankAddress: item.BankAddress, Status: system.StatusDisabled, Remark: input.Remark}
+		record = system.FinanceWithdrawal{RequestID: "WNF" + token, CustomerID: item.ID, Amount: input.Amount, Currency: "CNY", Method: "证转银", BankName: item.BankName, BankCard: item.BankCard, BankAddress: item.BankAddress, Status: system.StatusDisabled, Remark: input.Remark}
 		return tx.Create(&record).Error
 	})
 	if err != nil {

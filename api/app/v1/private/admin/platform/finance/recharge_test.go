@@ -221,6 +221,22 @@ func TestValidateWithdrawalReview(t *testing.T) {
 	}
 }
 
+func TestIsLegacyFrozenWithdrawal(t *testing.T) {
+	for _, tc := range []struct {
+		requestID string
+		legacy    bool
+	}{
+		{requestID: "W123456", legacy: true},
+		{requestID: "WNF123456", legacy: false},
+		{requestID: "ADMIN-W-123456", legacy: false},
+		{requestID: "", legacy: false},
+	} {
+		if actual := isLegacyFrozenWithdrawal(system.FinanceWithdrawal{RequestID: tc.requestID}); actual != tc.legacy {
+			t.Fatalf("申请编号%s冻结兼容判断应为%t，实际%t", tc.requestID, tc.legacy, actual)
+		}
+	}
+}
+
 func TestRechargeReviewIntegration(t *testing.T) {
 	dsn := os.Getenv("FINANCE_TEST_DSN")
 	if dsn == "" {

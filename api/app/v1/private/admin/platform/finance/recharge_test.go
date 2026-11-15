@@ -78,6 +78,13 @@ func TestManualRecordTime(t *testing.T) {
 	}
 }
 
+func TestAdminWithdrawalRequestID(t *testing.T) {
+	now := time.Date(2026, 11, 15, 15, 30, 0, 123456789, time.UTC)
+	if actual, expected := adminWithdrawalRequestID(now), "ADMIN-W-1794756600123456789"; actual != expected {
+		t.Fatalf("后台提现申请编号应为%s，实际%s", expected, actual)
+	}
+}
+
 func assertRechargeResponse(t *testing.T, row rechargeResponse) {
 	t.Helper()
 	recorder := httptest.NewRecorder()

@@ -65,6 +65,10 @@ type withdrawalInput struct {
 	RecordedAt    int64  `json:"recorded_at"`
 }
 
+func adminWithdrawalRequestID(now time.Time) string {
+	return fmt.Sprintf("ADMIN-W-%d", now.UnixNano())
+}
+
 func manualRecordTime(recordedAt int64, now time.Time) (time.Time, error) {
 	if recordedAt == 0 {
 		return time.Time{}, nil
@@ -308,6 +312,7 @@ func SaveWithdrawal(c *gin.Context) {
 			return
 		}
 		input.CustomerID = customer.ID
+		input.RequestID = adminWithdrawalRequestID(time.Now())
 		input.BankName = customer.BankName
 		input.BankCard = customer.BankCard
 		input.BankAddress = customer.BankAddress

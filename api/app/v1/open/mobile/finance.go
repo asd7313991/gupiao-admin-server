@@ -160,7 +160,7 @@ func ListCustomerRecharges(c *gin.Context) {
 		return
 	}
 	var rows []system.FinanceRecharge
-	if err := db.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := db.Order("created_at DESC, id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取银转证记录失败")
 		return
 	}
@@ -180,7 +180,7 @@ func ListCustomerWithdrawals(c *gin.Context) {
 		return
 	}
 	var rows []system.FinanceWithdrawal
-	if err := db.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := db.Order("created_at DESC, id DESC").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取证转银记录失败")
 		return
 	}

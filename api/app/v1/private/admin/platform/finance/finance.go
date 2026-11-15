@@ -103,7 +103,7 @@ func ListRecharges(c *gin.Context) {
 		return
 	}
 	var rows []rechargeResponse
-	if err := db.Order("finance_recharges.id DESC").Offset((page - 1) * size).Limit(size).Scan(&rows).Error; err != nil {
+	if err := db.Order("finance_recharges.created_at DESC, finance_recharges.id DESC").Offset((page - 1) * size).Limit(size).Scan(&rows).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "查询充值记录失败")
 		return
 	}
@@ -133,7 +133,7 @@ func ListWithdrawals(c *gin.Context) {
 		return
 	}
 	var rows []withdrawalResponse
-	if err := db.Order("finance_withdrawals.id DESC").Offset((page - 1) * size).Limit(size).Scan(&rows).Error; err != nil {
+	if err := db.Order("finance_withdrawals.created_at DESC, finance_withdrawals.id DESC").Offset((page - 1) * size).Limit(size).Scan(&rows).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "查询提现申请失败")
 		return
 	}

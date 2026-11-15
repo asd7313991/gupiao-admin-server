@@ -209,6 +209,18 @@ func TestValidateRechargeReview(t *testing.T) {
 	}
 }
 
+func TestValidateWithdrawalReview(t *testing.T) {
+	for _, tc := range []struct {
+		status uint
+		reason string
+		valid  bool
+	}{{1, "", true}, {3, "客户取消提现", true}, {3, "", false}, {3, " \n ", false}, {2, "", false}, {0, "", false}, {4, "", false}} {
+		if err := validateWithdrawalReview(tc.status, tc.reason); (err == nil) != tc.valid {
+			t.Fatalf("状态%d、原因%q校验不符：%v", tc.status, tc.reason, err)
+		}
+	}
+}
+
 func TestRechargeReviewIntegration(t *testing.T) {
 	dsn := os.Getenv("FINANCE_TEST_DSN")
 	if dsn == "" {

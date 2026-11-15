@@ -37,8 +37,8 @@ type withdrawalResponse struct {
 	ID            uint      `json:"id"`
 	RequestID     string    `json:"request_id"`
 	CustomerID    uint      `json:"customer_id"`
-	CustomerName  string `json:"customer_name"`
-	CustomerPhone string `json:"customer_phone"`
+	CustomerName  string    `json:"customer_name"`
+	CustomerPhone string    `json:"customer_phone"`
 	Amount        float64   `json:"amount"`
 	Currency      string    `json:"currency"`
 	Method        string    `json:"method"`
@@ -325,39 +325,16 @@ func SaveWithdrawal(c *gin.Context) {
 			return
 		}
 	} else {
-		if input.Status != system.StatusEnabled && input.Status != 3 {
-			response.ReturnError(c, response.INVALID_ARGUMENT, "审核状态无效")
+		if err := validateWithdrawalReview(input.Status, input.FailureReason); err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
 			return
 		}
 		err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
-			var current system.FinanceWithdrawal
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, input.ID).Error; err != nil {
-				return err
+			current, err := reviewWithdrawal(tx, input.ID, input.Status, input.FailureReason, input.Remark)
+			if err == nil {
+				input = current
 			}
-			if current.Status != system.StatusDisabled {
-				return fmt.Errorf("提现申请已处理")
-			}
-			var customer system.Customer
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, current.CustomerID).Error; err != nil {
-				return err
-			}
-			if customer.FrozenBalance < current.Amount {
-				return fmt.Errorf("客户冻结资金不足")
-			}
-			customer.FrozenBalance -= current.Amount
-			if input.Status == 3 {
-				customer.Balance += current.Amount
-			}
-			if err := tx.Save(&customer).Error; err != nil {
-				return err
-			}
-			if input.Status == system.StatusEnabled {
-				if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "证转银", Direction: "出账", Currency: current.Currency, Amount: current.Amount, Balance: customer.Balance, Remark: "证转银审核完成"}).Error; err != nil {
-					return err
-				}
-			}
-			current.Status, current.ReviewedAt, current.FailureReason, current.Remark = input.Status, time.Now().Unix(), input.FailureReason, input.Remark
-			return tx.Save(&current).Error
+			return err
 		})
 		if err != nil {
 			response.ReturnError(c, response.DATA_LOSS, err.Error())
@@ -365,4 +342,60 @@ func SaveWithdrawal(c *gin.Context) {
 		}
 	}
 	response.ReturnData(c, input)
+}
+
+func validateWithdrawalReview(status uint, reason string) error {
+	if status != system.StatusEnabled && status != 3 {
+		return fmt.Errorf("请选择通过或失败")
+	}
+	if status == 3 && strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("请填写提现失败原因")
+	}
+	return nil
+}
+
+// 调用方提供事务，锁定提现单和客户，保证并发审核最多扣款一次。
+func reviewWithdrawal(tx *gorm.DB, id uint, status uint, reason, remark string) (system.FinanceWithdrawal, error) {
+	var current system.FinanceWithdrawal
+	if err := validateWithdrawalReview(status, reason); err != nil {
+		return current, err
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, id).Error; err != nil {
+		return current, err
+	}
+	if current.Status != system.StatusDisabled {
+		return current, fmt.Errorf("提现申请已处理，不能重复审核")
+	}
+	if current.Currency != "CNY" && current.Currency != "HKD" {
+		return current, fmt.Errorf("提现记录币种无效，不能审核")
+	}
+	if current.Amount <= 0 || math.IsNaN(current.Amount) || math.IsInf(current.Amount, 0) {
+		return current, fmt.Errorf("提现记录金额无效，不能审核")
+	}
+	if status == system.StatusEnabled {
+		var customer system.Customer
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&customer, current.CustomerID).Error; err != nil {
+			return current, err
+		}
+		field, balance := "balance", customer.Balance
+		if current.Currency == "HKD" {
+			field, balance = "hkd_balance", customer.HKDBalance
+		}
+		if balance < current.Amount {
+			return current, fmt.Errorf("客户可用余额不足，无法通过提现审核")
+		}
+		balance = math.Round((balance-current.Amount)*100) / 100
+		if err := tx.Model(&customer).Update(field, balance).Error; err != nil {
+			return current, err
+		}
+		if err := tx.Create(&system.CustomerFundRecord{CustomerID: customer.ID, Type: "证转银", Direction: "出账", Currency: current.Currency, Amount: current.Amount, Balance: balance, Remark: "证转银审核完成"}).Error; err != nil {
+			return current, err
+		}
+	}
+	current.Status, current.ReviewedAt, current.Remark = status, time.Now().Unix(), strings.TrimSpace(remark)
+	current.FailureReason = ""
+	if status == 3 {
+		current.FailureReason = strings.TrimSpace(reason)
+	}
+	return current, tx.Save(&current).Error
 }

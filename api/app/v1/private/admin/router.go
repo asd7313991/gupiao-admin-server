@@ -97,6 +97,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	customerGroup.PUT("/verification/review/batch", customer.BatchReviewVerification)
 	customerGroup.PUT("/status/batch", customer.BatchSetStatus)
 	customerGroup.GET("/fund-records", customer.FundRecords)
+	customerGroup.DELETE("/fund-records", customer.DeleteFundRecord)
 	customerGroup.GET("/devices", customer.Devices)
 	customerGroup.PUT("/devices/block", customer.SetDeviceBlocked)
 	customerGroup.PUT("/devices/block/batch", customer.BatchSetDeviceBlocked)

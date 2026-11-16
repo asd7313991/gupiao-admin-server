@@ -405,6 +405,26 @@ func FundRecords(c *gin.Context) {
 	response.ReturnData(c, records)
 }
 
+func DeleteFundRecord(c *gin.Context) {
+	var input struct {
+		ID uint `json:"id"`
+	}
+	if !middleware.CheckParam(&input, c) || input.ID == 0 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "资金流水 ID 无效")
+		return
+	}
+	result := pgdb.GetClient().Unscoped().Where("id = ?", input.ID).Delete(&system.CustomerFundRecord{})
+	if result.Error != nil {
+		response.ReturnError(c, response.DATA_LOSS, "删除资金流水失败")
+		return
+	}
+	if result.RowsAffected == 0 {
+		response.ReturnError(c, response.NOT_FOUND, "资金流水不存在")
+		return
+	}
+	response.ReturnData(c, nil)
+}
+
 func Devices(c *gin.Context) {
 	var records []system.CustomerDevice
 	db := pgdb.GetClient().Order("id DESC")

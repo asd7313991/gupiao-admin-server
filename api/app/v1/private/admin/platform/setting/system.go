@@ -9,11 +9,14 @@ import (
 	"path/filepath"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
+	"api-server/util/customerservice"
 )
 
 func GetSystemSetting(c *gin.Context) {
@@ -40,12 +43,17 @@ func SaveSystemSetting(c *gin.Context) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "系统设置格式错误")
 		return
 	}
-	var setting system.AppSystemSetting
-	if err := pgdb.GetClient().First(&setting).Error; err != nil {
-		response.ReturnError(c, response.DATA_LOSS, "读取系统设置失败")
-		return
-	}
-	if err := pgdb.GetClient().Model(&setting).Update("config", string(content)).Error; err != nil {
+	if err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+		var setting system.AppSystemSetting
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&setting).Error; err != nil {
+			return err
+		}
+		merged, err := customerservice.PreserveURL(string(content), setting.Config)
+		if err != nil {
+			return err
+		}
+		return tx.Model(&setting).Update("config", merged).Error
+	}); err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存系统设置失败")
 		return
 	}

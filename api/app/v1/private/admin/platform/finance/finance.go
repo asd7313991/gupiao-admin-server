@@ -192,7 +192,7 @@ func SaveRecharge(c *gin.Context) {
 		if !recordTime.IsZero() {
 			input.CreatedAt = recordTime
 		}
-		if err := pgdb.GetClient().Create(&input).Error; err != nil {
+		if err := system.CreateWithAdminSound(pgdb.GetClient(), &input, "recharge"); err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "添加充值记录失败")
 			return
 		}
@@ -325,7 +325,7 @@ func SaveWithdrawal(c *gin.Context) {
 		if !recordTime.IsZero() {
 			input.CreatedAt = recordTime
 		}
-		if err := pgdb.GetClient().Create(&input).Error; err != nil {
+		if err := system.CreateWithAdminSound(pgdb.GetClient(), &input, "withdrawal"); err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "添加提现申请失败")
 			return
 		}

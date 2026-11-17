@@ -104,7 +104,7 @@ func RequestRecharge(c *gin.Context) {
 		return
 	}
 	record := system.FinanceRecharge{RequestID: "R" + token, CustomerID: item.ID, Amount: input.Amount, Currency: "CNY", Method: "银转证", Status: system.StatusDisabled, Remark: input.Remark}
-	if err := pgdb.GetClient().Create(&record).Error; err != nil {
+	if err := system.CreateWithAdminSound(pgdb.GetClient(), &record, "recharge"); err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "提交银转证申请失败")
 		return
 	}
@@ -140,7 +140,10 @@ func RequestWithdrawal(c *gin.Context) {
 			return err
 		}
 		record = system.FinanceWithdrawal{RequestID: "WNF" + token, CustomerID: item.ID, Amount: input.Amount, Currency: "CNY", Method: "证转银", BankName: item.BankName, BankCard: item.BankCard, BankAddress: item.BankAddress, Status: system.StatusDisabled, Remark: input.Remark}
-		return tx.Create(&record).Error
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		return system.RecordAdminSoundEvent(tx, "withdrawal")
 	})
 	if err != nil {
 		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())

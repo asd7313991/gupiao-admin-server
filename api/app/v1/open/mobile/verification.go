@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
@@ -330,7 +331,12 @@ func SaveVerificationIdentity(c *gin.Context) {
 		response.ReturnError(c, response.FAILED_PRECONDITION, err.Error())
 		return
 	}
-	if err := pgdb.GetClient().Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
+	if err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&customer).Updates(map[string]any{"name": input.Name, "id_card": input.IDCard, "verified": verificationPending, "verification_remark": "等待后台审核"}).Error; err != nil {
+			return err
+		}
+		return system.RecordAdminSoundEvent(tx, "verification")
+	}); err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "保存身份资料失败")
 		return
 	}

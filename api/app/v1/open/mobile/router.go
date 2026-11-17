@@ -11,6 +11,7 @@ func RegisterRoutes(open *gin.RouterGroup) {
 	group.POST("/auth/register", Register)
 	group.POST("/auth/login", Login)
 	group.GET("/branding", MobileBranding)
+	group.GET("/customer-service", CustomerService)
 	group.GET("/branding/logo", MobileBrandLogo)
 	group.GET("/article", MobileArticle)
 	group.GET("/article-images/:name", MobileArticleImage)

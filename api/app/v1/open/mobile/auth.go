@@ -67,7 +67,7 @@ func Register(c *gin.Context) {
 		name = "用户" + input.Phone[7:]
 	}
 	item := system.Customer{Phone: input.Phone, Name: name, Password: hash, GroupName: "普通用户", Status: system.StatusEnabled, FundStatus: system.StatusEnabled, Verified: system.StatusDisabled}
-	if err := pgdb.GetClient().Create(&item).Error; err != nil {
+	if err := system.CreateWithAdminSound(pgdb.GetClient(), &item, "registration"); err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "注册失败，请稍后重试")
 		return
 	}

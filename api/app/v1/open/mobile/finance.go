@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -17,8 +18,9 @@ import (
 )
 
 const (
-	minTransferAmount = 100.0
-	maxTransferAmount = 5_000_000.0
+	minTransferAmount   = 100.0
+	maxTransferAmount   = 5_000_000.0
+	maxWithdrawalAmount = 50_000_000.0
 )
 
 type transferInput struct {
@@ -72,6 +74,8 @@ func FinanceSummary(c *gin.Context) {
 		"quick_amounts": parseQuickAmounts(settings.Recharge.QuickAmounts),
 		"min_recharge":  settings.Recharge.MinRecharge, "min_withdraw": settings.Recharge.MinWithdraw,
 		"customer_service": strings.TrimSpace(settings.Links.CustomerService),
+		"withdraw_start":   strings.TrimSpace(settings.Recharge.WithdrawStart),
+		"withdraw_end":     strings.TrimSpace(settings.Recharge.WithdrawEnd),
 	})
 }
 
@@ -90,7 +94,7 @@ func parseQuickAmounts(value string) []float64 {
 }
 
 func RequestRecharge(c *gin.Context) {
-	input, ok := bindTransferInput(c)
+	input, ok := bindTransferInput(c, maxTransferAmount)
 	if !ok {
 		return
 	}
@@ -112,7 +116,7 @@ func RequestRecharge(c *gin.Context) {
 }
 
 func RequestWithdrawal(c *gin.Context) {
-	input, ok := bindTransferInput(c)
+	input, ok := bindTransferInput(c, maxWithdrawalAmount)
 	if !ok {
 		return
 	}
@@ -135,6 +139,9 @@ func RequestWithdrawal(c *gin.Context) {
 		if item.Balance < input.Amount {
 			return fmt.Errorf("可用余额不足")
 		}
+		if err := checkWithdrawalTime(tx, time.Now()); err != nil {
+			return err
+		}
 		token, err := randomToken(10)
 		if err != nil {
 			return err
@@ -152,6 +159,36 @@ func RequestWithdrawal(c *gin.Context) {
 	var item system.Customer
 	_ = pgdb.GetClient().First(&item, customerID).Error
 	response.ReturnData(c, transferViewFromWithdrawal(record, item))
+}
+
+func checkWithdrawalTime(db *gorm.DB, now time.Time) error {
+	var row system.AppSystemSetting
+	if err := db.First(&row).Error; err != nil {
+		return fmt.Errorf("读取提现时间配置失败，请稍后重试")
+	}
+	settings, err := parseMobileTradeSettings(row.Config)
+	if err != nil {
+		return fmt.Errorf("提现时间配置异常，请联系平台管理员")
+	}
+	return validateWithdrawalTime(now, settings.Recharge.WithdrawStart, settings.Recharge.WithdrawEnd)
+}
+
+func validateWithdrawalTime(now time.Time, start, end string) error {
+	start, end = strings.TrimSpace(start), strings.TrimSpace(end)
+	for _, clock := range []string{start, end} {
+		parsed, err := time.Parse("15:04:05", clock)
+		if err != nil || parsed.Format("15:04:05") != clock {
+			return fmt.Errorf("提现时间配置异常，请联系平台管理员")
+		}
+	}
+	if start >= end {
+		return fmt.Errorf("提现时间配置异常：结束时间须晚于开始时间，暂不支持跨午夜，请联系平台管理员")
+	}
+	clock := now.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("15:04:05")
+	if clock < start || clock >= end {
+		return fmt.Errorf("当前不在提现申请时段，请于北京时间 %s 至 %s 前提交", start, end)
+	}
+	return nil
 }
 
 func ListCustomerRecharges(c *gin.Context) {
@@ -228,10 +265,10 @@ func ListCustomerFundFlows(c *gin.Context) {
 	response.ReturnData(c, gin.H{"records": result, "total": total, "page": page, "page_size": size})
 }
 
-func bindTransferInput(c *gin.Context) (transferInput, bool) {
+func bindTransferInput(c *gin.Context, maximumAmount float64) (transferInput, bool) {
 	var input transferInput
-	if err := c.ShouldBindJSON(&input); err != nil || input.Amount < minTransferAmount || input.Amount > maxTransferAmount || input.Amount != math.Round(input.Amount*100)/100 || !tradePINPattern.MatchString(input.TradePIN) {
-		response.ReturnError(c, response.INVALID_ARGUMENT, "金额须为 100 至 500 万元，且交易密码为 6 位数字")
+	if err := c.ShouldBindJSON(&input); err != nil || input.Amount < minTransferAmount || input.Amount > maximumAmount || input.Amount != math.Round(input.Amount*100)/100 || !tradePINPattern.MatchString(input.TradePIN) {
+		response.ReturnError(c, response.INVALID_ARGUMENT, fmt.Sprintf("金额须为 100 至 %.0f 万元，且交易密码为 6 位数字", maximumAmount/10_000))
 		return input, false
 	}
 	return input, true

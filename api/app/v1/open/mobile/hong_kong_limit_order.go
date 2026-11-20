@@ -356,7 +356,7 @@ func matchHongKongLimitOrderDB(db *gorm.DB, customerID, id uint, quote hongKongQ
 				leverage = 1
 			}
 			if leverage != 1 && leverage != positionbasis.FinancingLeverage {
-				return exchangeRejection("港股委托杠杆快照无效")
+				return exchangeRejection("港股委托孖展快照无效")
 			}
 			if roundMoney(positionbasis.BuyMargin(amount, leverage, positionbasis.Actual)+fee) > order.FrozenAmount {
 				return exchangeRejection("当前费用超过原冻结港币，委托保留待成交，请撤单后重新提交")

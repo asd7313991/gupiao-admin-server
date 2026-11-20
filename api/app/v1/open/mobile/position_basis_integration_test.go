@@ -60,7 +60,11 @@ func TestPositionBasisIntegration(t *testing.T) {
 			if err := tx.First(&customer, customer.ID).Error; err != nil {
 				return err
 			}
-			return executeMobileOrder(tx, &customer, security, orderInput{Direction: direction, Quantity: quantity}, settings, &result, &rejection, orders...)
+			at := time.Now()
+			if direction == "买入" {
+				at = at.AddDate(0, 0, -7)
+			}
+			return executeMobileOrderAt(tx, &customer, security, orderInput{Direction: direction, Quantity: quantity}, settings, &result, &rejection, at, orders...)
 		})
 		return result, err
 	}
@@ -99,7 +103,7 @@ func TestPositionBasisIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(0, 0, 0, 11000, system.StatusDisabled)
-	// 重新买入须恢复启用，委托杠杆快照不随当前设置改变。
+	// 重新买入须恢复启用，委托孖展快照不随当前设置改变。
 	settings.Risk.DefaultLeverage = 8
 	if _, err := run("买入", 1000, 10, system.LimitOrder{QuantityBasis: positionbasis.Actual, Leverage: 5}); err != nil {
 		t.Fatal(err)
@@ -142,6 +146,7 @@ func TestPositionBasisIntegration(t *testing.T) {
 	}
 	// 未转换持仓保持旧本金扣款及五倍卖出结算，不能直接套新公式。
 	p.QuantityBasis, p.PositionQty, p.AvailableQty, p.TotalCost, p.CostPrice, p.Margin = positionbasis.Legacy, 100, 100, 1000, 10, 1000
+	p.UnsettledQty, p.SellableAt = 0, 0
 	if err := db.Save(&p).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +188,7 @@ func TestPositionBasisIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Leverage != 8 || p.Margin != 1000 || p.QuantityBasis != positionbasis.Legacy {
-		t.Fatal("迁移前无杠杆快照的旧委托应保持原设置回退，不伪造1倍")
+		t.Fatal("迁移前无孖展快照的旧委托应保持原设置回退，不伪造1倍")
 	}
 
 	t.Run("部分亏损卖出费用和剩余成本快照", func(t *testing.T) {
@@ -192,7 +197,7 @@ func TestPositionBasisIntegration(t *testing.T) {
 			if err := db.Create(&owner).Error; err != nil {
 				t.Fatal(err)
 			}
-			position := system.TradePosition{CustomerID: owner.ID, Symbol: security.Symbol, Currency: "CNY",
+			position := system.TradePosition{SettlementVerified: true, CustomerID: owner.ID, Symbol: security.Symbol, Currency: "CNY",
 				PositionQty: 200, AvailableQty: 200, TotalCost: 2000, CostPrice: 10, Margin: 2000, Leverage: 5, QuantityBasis: basis, Status: 1}
 			if basis == positionbasis.Actual {
 				position.Margin = 400
@@ -280,7 +285,11 @@ func TestPositionBasisIntegration(t *testing.T) {
 		fill := func(order *system.LimitOrder) error {
 			t.Helper()
 			return db.Transaction(func(tx *gorm.DB) error {
-				filled, err := fillAStockLimitOrder(tx, order, security, settings)
+				at := time.Now()
+				if order.Direction == "买入" {
+					at = at.AddDate(0, 0, -7)
+				}
+				filled, err := fillAStockLimitOrderAt(tx, order, security, settings, at)
 				if err == nil && !filled {
 					return fmt.Errorf("有效盘口委托未成交")
 				}
@@ -362,7 +371,7 @@ func TestPositionBasisIntegration(t *testing.T) {
 		}
 		marketValue := currentPositionsMarketValue(db, []system.TradePosition{p})
 		if marketValue != 5500 || dailyManagementFee(marketValue, .00028) != 1.54 {
-			t.Fatalf("实际股数管理费不得再乘杠杆，市值%v", marketValue)
+			t.Fatalf("实际股数管理费不得再乘孖展，市值%v", marketValue)
 		}
 		if err := db.Transaction(func(tx *gorm.DB) error {
 			if err := forceCloseAllPositions(tx, &customer, []system.TradePosition{p}, time.Now().Unix(), "实际股数自动强平测试"); err != nil {

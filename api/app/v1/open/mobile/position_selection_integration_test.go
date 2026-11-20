@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"api-server/db/pgdb/system"
+	"api-server/util/positionsettlement"
 	"gorm.io/gorm"
 )
 
@@ -20,7 +21,7 @@ func TestSellUsesOpenPositionAfterClosedHistory(t *testing.T) {
 	if err := db.Create(&history).Error; err != nil {
 		t.Fatal(err)
 	}
-	open := system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, Currency: "CNY",
+	open := system.TradePosition{SettlementVerified: true, CustomerID: customer.ID, Symbol: security.Symbol, Currency: "CNY",
 		PositionQty: 1000, AvailableQty: 1000, CostPrice: 11.8, TotalCost: 11800, Margin: 11800, Leverage: 1, Status: 1}
 	if err := db.Create(&open).Error; err != nil {
 		t.Fatal(err)
@@ -91,7 +92,7 @@ func TestPositionSelectionAcrossOrderLifecycle(t *testing.T) {
 			if err := db.Create(&history).Error; err != nil {
 				t.Fatal(err)
 			}
-			p := system.TradePosition{CustomerID: c.ID, Symbol: s.Symbol, Currency: currency, PositionQty: 1000, AvailableQty: 1000,
+			p := system.TradePosition{SettlementVerified: true, CustomerID: c.ID, Symbol: s.Symbol, Currency: currency, PositionQty: 1000, AvailableQty: 1000,
 				TotalCost: 11800, CostPrice: 11.8, Margin: 2360, Leverage: 5, QuantityBasis: 1, Status: 1}
 			if err := db.Create(&p).Error; err != nil {
 				t.Fatal(err)
@@ -108,7 +109,8 @@ func TestPositionSelectionAcrossOrderLifecycle(t *testing.T) {
 				if err := db.First(&p, p.ID).Error; err != nil {
 					t.Fatal(err)
 				}
-				if p.PositionQty != qty || p.AvailableQty != available {
+				shownAvailable, _ := positionsettlement.Preview(p, now)
+				if p.PositionQty != qty || shownAvailable != available {
 					t.Fatalf("必须扣减当前持仓，不能选历史空仓：qty=%v available=%v", p.PositionQty, p.AvailableQty)
 				}
 				for _, old := range []system.TradePosition{history, laterHistory} {
@@ -136,7 +138,11 @@ func TestPositionSelectionAcrossOrderLifecycle(t *testing.T) {
 					}
 					var result orderResult
 					var rejection string
-					err := executeMobileOrder(tx, &c, s, input, settings, &result, &rejection)
+					at := now
+					if direction == "买入" {
+						at = at.AddDate(0, 0, -7)
+					}
+					err := executeMobileOrderAt(tx, &c, s, input, settings, &result, &rejection, at)
 					if err == nil && result.PositionID != p.ID {
 						return errors.New("市价成交误选历史空仓")
 					}
@@ -150,7 +156,7 @@ func TestPositionSelectionAcrossOrderLifecycle(t *testing.T) {
 					return placeHongKongLimitOrderDB(db, c.ID, s, q, hongKongLimitInput{limitOrderInput: input,
 						RequestID: "selection-limit-" + time.Unix(int64(sequence), 0).Format("150405")}, now)
 				}
-				order, _, err := placeAStockLimitOrderDB(db, c.ID, s, input, settings)
+				order, _, err := placeAStockLimitOrderDBAt(db, c.ID, s, input, settings, now)
 				return order, err
 			}
 			fill := func(order system.LimitOrder) error {
@@ -161,7 +167,11 @@ func TestPositionSelectionAcrossOrderLifecycle(t *testing.T) {
 				} else {
 					err = db.Transaction(func(tx *gorm.DB) error {
 						var err error
-						filled, err = fillAStockLimitOrder(tx, &order, s, settings)
+						at := now
+						if order.Direction == "买入" {
+							at = at.AddDate(0, 0, -7)
+						}
+						filled, err = fillAStockLimitOrderAt(tx, &order, s, settings, at)
 						return err
 					})
 				}

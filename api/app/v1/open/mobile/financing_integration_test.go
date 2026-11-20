@@ -87,8 +87,12 @@ func TestFinancingMarginLifecycle(t *testing.T) {
 					}
 					var result orderResult
 					var rejection string
-					return executeMobileOrder(tx, &customer, stock, orderInput{Direction: direction, Quantity: qty},
-						mobileTradeSettings{}, &result, &rejection)
+					at := now
+					if direction == "买入" {
+						at = now.AddDate(0, 0, -7)
+					}
+					return executeMobileOrderAt(tx, &customer, stock, orderInput{Direction: direction, Quantity: qty},
+						mobileTradeSettings{}, &result, &rejection, at)
 				})
 			}
 			check := func(qty, cost, total, base, extra, balance float64) system.TradePosition {

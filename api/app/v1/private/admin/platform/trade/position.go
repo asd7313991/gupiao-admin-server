@@ -1,6 +1,7 @@
 package trade
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -21,6 +22,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/positionbasis"
+	"api-server/util/positionsettlement"
 )
 
 func ListPositions(c *gin.Context) {
@@ -48,6 +50,7 @@ func ListPositions(c *gin.Context) {
 		return
 	}
 	for index := range items {
+		items[index].AvailableQty, items[index].SettlementNotice = positionsettlement.Preview(items[index], time.Now())
 		_, supplemental := positionbasis.MarginParts(items[index])
 		positionbasis.SetSupplementalMargin(&items[index], supplemental)
 		if price, exists := livePrices[items[index].Symbol]; exists {
@@ -163,8 +166,11 @@ func refreshPositionMarketValues(position *system.TradePosition, price float64) 
 func SavePosition(c *gin.Context) {
 	var input struct {
 		system.TradePosition
-		RecordChange bool   `json:"record_change"`
-		Phone        string `json:"phone"`
+		RecordChange      bool    `json:"record_change"`
+		Phone             string  `json:"phone"`
+		ConfirmSettlement bool    `json:"confirm_settlement"`
+		PendingQuantity   float64 `json:"pending_quantity"`
+		PendingBuyAt      int64   `json:"pending_buy_at"`
 	}
 	if !middleware.CheckParam(&input, c) || input.Symbol == "" {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "证券代码为必填项")
@@ -214,7 +220,7 @@ func SavePosition(c *gin.Context) {
 		}
 		input.Leverage = positionbasis.FinancingLeverage
 	}
-	if input.BuyAt == 0 {
+	if input.BuyAt == 0 && input.ID == 0 {
 		input.BuyAt = time.Now().Unix()
 	}
 	input.TradePosition.TotalCost = input.PositionQty * input.CostPrice
@@ -238,6 +244,11 @@ func SavePosition(c *gin.Context) {
 		input.Status = system.StatusEnabled
 	}
 	if input.ID == 0 {
+		// 新建手工持仓也按填写的买入日期执行T+1，不接受客户端提交的交收字段。
+		if err := positionsettlement.Confirm(&input.TradePosition, input.PositionQty, input.BuyAt, time.Now()); err != nil {
+			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
+			return
+		}
 		if err := pgdb.GetClient().Create(&input.TradePosition).Error; err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "新增持仓失败")
 			return
@@ -262,8 +273,39 @@ func SavePosition(c *gin.Context) {
 				return fmt.Errorf("%s", rejection)
 			}
 			if input.CustomerID != existing.CustomerID || input.Symbol != existing.Symbol || input.Currency != existing.Currency || input.Leverage != existing.Leverage {
-				rejection = "已有持仓的账户、证券、币种或杠杆变更需专用转换，普通编辑不能修改"
+				rejection = "已有持仓的账户、证券、币种或孖展变更需专用转换，普通编辑不能修改"
 				return fmt.Errorf("%s", rejection)
+			}
+			before, err := json.Marshal(existing)
+			if err != nil {
+				return err
+			}
+			if input.ConfirmSettlement {
+				var pendingOrders int64
+				if err := tx.Model(&system.LimitOrder{}).Where("customer_id = ? AND symbol = ? AND direction = ? AND status = ?", existing.CustomerID, existing.Symbol, "卖出", "pending").Count(&pendingOrders).Error; err != nil {
+					return err
+				}
+				if pendingOrders > 0 {
+					rejection = "请先撤销该股票的待成交卖单，再核对交收数量"
+					return fmt.Errorf("%s", rejection)
+				}
+				if err := positionsettlement.Confirm(&input.TradePosition, input.PendingQuantity, input.PendingBuyAt, time.Now()); err != nil {
+					rejection = err.Error()
+					return err
+				}
+			} else {
+				if input.PositionQty != existing.PositionQty || input.BuyAt != existing.BuyAt {
+					rejection = "修改持仓股数或买入日期必须同时核对T+1交收数量"
+					return fmt.Errorf("%s", rejection)
+				}
+				if existing.SettlementVerified {
+					if err := positionsettlement.Refresh(&existing, time.Now()); err != nil {
+						rejection = err.Error()
+						return err
+					}
+				}
+				input.SettlementVerified, input.UnsettledQty, input.SellableAt = existing.SettlementVerified, existing.UnsettledQty, existing.SellableAt
+				input.AvailableQty = existing.AvailableQty
 			}
 			input.QuantityBasis, input.CreatedAt = existing.QuantityBasis, existing.CreatedAt
 			input.MarginCallLevel = existing.MarginCallLevel
@@ -277,7 +319,17 @@ func SavePosition(c *gin.Context) {
 			_, supplemental := positionbasis.MarginParts(existing)
 			positionbasis.SetSupplementalMargin(&input.TradePosition, supplemental)
 			input.MarketValue, input.ProfitLoss, input.ProfitRate = positionbasis.Values(input.TradePosition, input.CurrentPrice)
-			return tx.Save(&input.TradePosition).Error
+			if err := tx.Save(&input.TradePosition).Error; err != nil {
+				return err
+			}
+			if input.ConfirmSettlement {
+				after, err := json.Marshal(input.TradePosition)
+				if err != nil {
+					return err
+				}
+				return tx.Create(&system.PositionSettlementReview{PositionID: input.ID, ReviewerID: middleware.GetCurrentUserID(c), Before: string(before), After: string(after)}).Error
+			}
+			return nil
 		})
 		if rejection != "" {
 			response.ReturnError(c, response.FAILED_PRECONDITION, rejection)
@@ -365,6 +417,14 @@ func ForceClosePosition(c *gin.Context) {
 			rejection = "该持仓已关闭，无需重复强平"
 			return nil
 		}
+		if err := positionsettlement.Refresh(&position, time.Now()); err != nil {
+			rejection = err.Error()
+			return nil
+		}
+		if !positionsettlement.HongKong(position) && position.UnsettledQty > 0 {
+			rejection = "A股含未到下一个交易日的股数，暂不能全部强平"
+			return nil
+		}
 		var security system.StockSecurity
 		if err := tx.Where("symbol = ?", position.Symbol).First(&security).Error; err != nil {
 			return err
@@ -381,7 +441,7 @@ func ForceClosePosition(c *gin.Context) {
 		balance := &customer.Balance
 		if hongKong {
 			if position.Currency != "HKD" || (position.Leverage != 1 && !positionbasis.IsFinanced(position)) {
-				return fmt.Errorf("港股持仓币种或杠杆异常")
+				return fmt.Errorf("港股持仓币种或孖展异常")
 			}
 			balance = &customer.HKDBalance
 		}

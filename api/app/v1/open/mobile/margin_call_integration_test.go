@@ -104,5 +104,5 @@ func marginCallTestPosition(customerID uint, security system.StockSecurity, loss
 		totalCost = roundMoney(principalValue / (1 - lossRate/100))
 	}
 	marketValue, profitLoss, profitRate := calculatePositionValues(100, security.LastPrice, totalCost, 5)
-	return system.TradePosition{CustomerID: customerID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: totalCost / 100, TotalCost: totalCost, Margin: totalCost, Leverage: 5, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate, Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
+	return system.TradePosition{SettlementVerified: true, CustomerID: customerID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", PositionQty: 100, AvailableQty: 100, CurrentPrice: security.LastPrice, CostPrice: totalCost / 100, TotalCost: totalCost, Margin: totalCost, Leverage: 5, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate, Status: system.StatusEnabled, BuyAt: time.Now().AddDate(0, 0, -7).Unix()}
 }

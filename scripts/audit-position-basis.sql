@@ -136,7 +136,7 @@ review AS (
             CASE WHEN abs(p.quantity - p.available - coalesce(o.frozen_sell_quantity, 0)) > 0.000001
                 THEN '持有减可卖数量与卖出挂单冻结数量不一致' END,
             CASE WHEN coalesce(o.pending_order_count, 0) > 0 THEN '存在未完成挂单，切换前必须处理冻结与委托口径' END,
-            CASE WHEN p.recorded_leverage < 1 THEN '杠杆原始记录不足1，旧程序按1倍处理，需要确认' END,
+            CASE WHEN p.recorded_leverage < 1 THEN '孖展原始记录不足1，旧程序按1倍处理，需要确认' END,
             CASE WHEN p.currency NOT IN ('CNY', 'HKD') THEN '币种不是人民币或港币' END,
             CASE WHEN p.currency = 'HKD' AND p.recorded_leverage <> 1 THEN '港股不是1倍全额持仓，需要单独检查' END,
             CASE WHEN p.margin <= 0 OR p.total_cost <= 0 OR p.cost_price <= 0 THEN '本金或成本非正数，不能自动转换' END,
@@ -239,7 +239,7 @@ SELECT jsonb_pretty(jsonb_build_object(
     'report_version', 'position-basis-audit-v1',
     'generated_at_beijing', to_char(current_timestamp AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'),
     'transaction_read_only', current_setting('transaction_read_only'),
-    'warning', '这是只读盘点，不是转换指令。保存价格不代表实时价，净成交匹配也不能证明没有人工改动。历史成交不按乘杠杆重写，挂单及费用必须另行核对。',
+    'warning', '这是只读盘点，不是转换指令。保存价格不代表实时价，净成交匹配也不能证明没有人工改动。历史成交不按乘孖展重写，挂单及费用必须另行核对。',
     'active_position_count', (SELECT count(*) FROM active_positions),
     'pending_order_count', (SELECT count(*) FROM pending_orders),
     'accounts', coalesce((

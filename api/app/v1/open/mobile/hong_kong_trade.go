@@ -512,13 +512,13 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 			leverage = 1 // 旧港股挂单没有孖展快照，仍按原全额规则成交。
 		}
 		if leverage != 1 && leverage != positionbasis.FinancingLeverage {
-			return result, exchangeRejection("港股委托杠杆快照无效")
+			return result, exchangeRejection("港股委托孖展快照无效")
 		}
 	}
 	var realizedProfit, realizedCost *float64
 	if input.Direction == "买入" {
 		if found == nil && position.PositionQty > 0 && positionLeverage(position) != leverage {
-			return result, exchangeRejection("该持仓尚未完成5倍孖展转换或与原委托杠杆不一致，暂不支持加仓")
+			return result, exchangeRejection("该持仓尚未完成5倍孖展转换或与原委托孖展不一致，暂不支持加仓")
 		}
 		if found == nil && position.PositionQty > 0 && position.Status != system.StatusEnabled {
 			return result, exchangeRejection("港股持仓状态异常，请先核对账务")
@@ -552,10 +552,10 @@ func executeHongKongOrder(tx *gorm.DB, customer *system.Customer, security syste
 			return result, exchangeRejection("非全部卖出时，数量须为整手")
 		}
 		if positionLeverage(position) != 1 && !positionbasis.IsFinanced(position) {
-			return result, exchangeRejection("港股持仓杠杆异常，请先核对账务")
+			return result, exchangeRejection("港股持仓孖展异常，请先核对账务")
 		}
 		if input.LimitOrderID > 0 && positionLeverage(position) != leverage {
-			return result, exchangeRejection("港股持仓与卖出委托杠杆不一致，请撤单后重试")
+			return result, exchangeRejection("港股持仓与卖出委托孖展不一致，请撤单后重试")
 		}
 		removed, marginRemoved := position.TotalCost, position.Margin
 		_, supplemental := positionbasis.MarginParts(position)

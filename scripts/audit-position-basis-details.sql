@@ -90,7 +90,7 @@ SELECT jsonb_pretty(jsonb_build_object(
     'report_version', 'position-basis-details-v1',
     'generated_at_beijing', to_char(current_timestamp AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS'),
     'transaction_read_only', current_setting('transaction_read_only'),
-    'warning', '只读盘点；成交记录无原始杠杆快照和人工录入标记，不能仅凭数量相等自动转换。冻结差额只作核对线索，不是自动退款依据。',
+    'warning', '只读盘点；成交记录无原始孖展快照和人工录入标记，不能仅凭数量相等自动转换。冻结差额只作核对线索，不是自动退款依据。',
     'accounts', coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.customer_id) FROM account_review a), '[]'::jsonb),
     'positions', coalesce((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.customer_id, p.id) FROM positions p), '[]'::jsonb),
     'position_trades', coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.position_id) FROM trade_details t), '[]'::jsonb),

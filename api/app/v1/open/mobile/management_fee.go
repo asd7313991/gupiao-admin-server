@@ -13,6 +13,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/positionbasis"
+	"api-server/util/positionsettlement"
 )
 
 func ProcessDailyManagementFees(now time.Time) (processed int, forced int, err error) {
@@ -153,6 +154,12 @@ func cancelCustomerPendingOrdersForMarket(tx *gorm.DB, customer *system.Customer
 func forceCloseAllPositions(tx *gorm.DB, customer *system.Customer, positions []system.TradePosition, closedAt int64, reason string) error {
 	for index := range positions {
 		position := &positions[index]
+		if err := positionsettlement.Refresh(position, time.Unix(closedAt, 0)); err != nil {
+			return fmt.Errorf("%s: %w", position.Symbol, err)
+		}
+		if !positionsettlement.HongKong(*position) && position.UnsettledQty > 0 {
+			return fmt.Errorf("%s含T+1待交收股数，暂不能全部强平", position.Symbol)
+		}
 		hk := strings.HasSuffix(position.Symbol, ".HK")
 		price := position.CurrentPrice
 		var security system.StockSecurity

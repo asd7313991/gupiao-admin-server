@@ -52,7 +52,7 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sqlDB.Close()
-	if err := db.AutoMigrate(&system.Customer{}, &system.StockSecurity{}, &system.TradePosition{}, &system.TradeRecord{}, &system.CustomerFundRecord{}); err != nil {
+	if err := db.AutoMigrate(&system.Customer{}, &system.StockSecurity{}, &system.TradePosition{}, &system.TradeRecord{}, &system.CustomerFundRecord{}, &system.LimitOrder{}, &system.PositionSettlementReview{}); err != nil {
 		t.Fatal(err)
 	}
 	customer := system.Customer{Phone: "19900000001", Balance: 100000, FrozenBalance: 100, HKDBalance: 20000}
@@ -130,8 +130,8 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		}
 		for _, record := range []system.TradePosition{saved, stored} {
 			if record.QuantityBasis != positionbasis.Actual || record.Leverage != 5 || record.Currency != "CNY" ||
-				record.PositionQty != 301 || record.AvailableQty != 301 || record.CostPrice != 52.45 {
-				t.Fatalf("实际股数、成本或5倍杠杆错误：%+v", record)
+				record.PositionQty != 301 || record.AvailableQty != 0 || record.UnsettledQty != 301 || !record.SettlementVerified || record.CostPrice != 52.45 {
+				t.Fatalf("实际股数、成本或5倍孖展错误：%+v", record)
 			}
 			near(record.TotalCost, 15787.45)
 			near(record.Margin, 3157.49)
@@ -173,6 +173,32 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		t.Fatal("人工调整成本仍须原额保留已经扣入的追加担保金")
 	}
 	near(saved.Margin, 16567.46)
+	review := struct {
+		system.TradePosition
+		ConfirmSettlement bool    `json:"confirm_settlement"`
+		PendingQuantity   float64 `json:"pending_quantity"`
+		PendingBuyAt      int64   `json:"pending_buy_at"`
+	}{saved, true, 100, time.Now().Unix()}
+	code, saved = save(http.MethodPut, review)
+	if code != 200 || !saved.SettlementVerified || saved.AvailableQty != 201 || saved.UnsettledQty != 100 {
+		t.Fatal("旧持仓审核后应拆分201可卖和100待交收", code, saved)
+	}
+	var reviews int64
+	if err := db.Model(&system.PositionSettlementReview{}).Where("position_id = ?", saved.ID).Count(&reviews).Error; err != nil || reviews != 1 {
+		t.Fatal("交收核对应保存审计快照", reviews, err)
+	}
+	saved.AvailableQty, saved.UnsettledQty = 301, 0
+	code, saved = save(http.MethodPut, saved)
+	if code != 200 || saved.AvailableQty != 201 || saved.UnsettledQty != 100 {
+		t.Fatal("未勾选核对不能直接伪造可卖股数", code, saved)
+	}
+	pending := system.LimitOrder{CustomerID: customer.ID, Symbol: saved.Symbol, Direction: "卖出", Status: "pending", Quantity: 100}
+	if err := db.Create(&pending).Error; err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := save(http.MethodPut, review); code != 400 {
+		t.Fatal("待成交卖单未撤销前不得覆盖交收股数")
+	}
 	untouched.Leverage = 5
 	if code, _ := save(http.MethodPut, untouched); code != 400 {
 		t.Fatal("不能借普通编辑跳过旧持仓孖展资金转换")

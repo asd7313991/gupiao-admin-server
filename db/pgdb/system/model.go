@@ -261,6 +261,10 @@ type TradePosition struct {
 	Currency           string   `json:"currency"`
 	PositionQty        float64  `json:"position_qty"`
 	AvailableQty       float64  `json:"available_qty"`
+	SettlementVerified bool     `json:"settlement_verified" gorm:"not null;default:false"`
+	UnsettledQty       float64  `json:"unsettled_qty" gorm:"not null;default:0"`
+	SellableAt         int64    `json:"sellable_at" gorm:"not null;default:0"`
+	SettlementNotice   string   `json:"settlement_notice,omitempty" gorm:"-"`
 	CurrentPrice       float64  `json:"current_price"`
 	CostPrice          float64  `json:"cost_price"`
 	TotalCost          float64  `json:"total_cost"`
@@ -274,6 +278,15 @@ type TradePosition struct {
 	ProfitRate         float64  `json:"profit_rate"`
 	Status             uint     `json:"status" gorm:"default:1"`
 	BuyAt              int64    `json:"buy_at"`
+}
+
+// PositionSettlementReview 保存后台交收核对的前后快照。
+type PositionSettlementReview struct {
+	gorm.Model
+	PositionID uint `gorm:"index;not null"`
+	ReviewerID uint
+	Before     string `gorm:"type:text;not null"`
+	After      string `gorm:"type:text;not null"`
 }
 
 // PositionBasisConversion 保存经批准的持仓口径转换前后快照。

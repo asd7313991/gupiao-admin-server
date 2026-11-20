@@ -21,6 +21,7 @@ import (
 	"api-server/util/hkquote"
 	"api-server/util/positionbasis"
 	"api-server/util/positionquote"
+	"api-server/util/positionsettlement"
 )
 
 type mobileTradeSettings struct {
@@ -102,6 +103,7 @@ type orderResult struct {
 }
 
 type tradePositionView struct {
+	SettlementNotice   string  `json:"settlement_notice,omitempty"`
 	QuantityBasis      uint    `json:"quantity_basis"`
 	QuoteSource        string  `json:"quote_source"`
 	QuoteAt            int64   `json:"quote_at"`
@@ -124,14 +126,15 @@ type tradePositionView struct {
 }
 
 type tradeHoldingView struct {
-	QuantityBasis uint    `json:"quantity_basis"`
-	ID            uint    `json:"id"`
-	Currency      string  `json:"currency"`
-	Symbol        string  `json:"symbol"`
-	StockName     string  `json:"stock_name"`
-	PositionQty   float64 `json:"position_qty"`
-	AvailableQty  float64 `json:"available_qty"`
-	Leverage      float64 `json:"leverage"`
+	SettlementNotice string  `json:"settlement_notice,omitempty"`
+	QuantityBasis    uint    `json:"quantity_basis"`
+	ID               uint    `json:"id"`
+	Currency         string  `json:"currency"`
+	Symbol           string  `json:"symbol"`
+	StockName        string  `json:"stock_name"`
+	PositionQty      float64 `json:"position_qty"`
+	AvailableQty     float64 `json:"available_qty"`
+	Leverage         float64 `json:"leverage"`
 }
 
 var errTradeRejected = errors.New("trade rejected")
@@ -158,8 +161,9 @@ func customerPositionQuery(db *gorm.DB, customerID uint, market string) *gorm.DB
 }
 
 func holdingView(item system.TradePosition) tradeHoldingView {
-	return tradeHoldingView{QuantityBasis: item.QuantityBasis, ID: item.ID, Currency: item.Currency, Symbol: item.Symbol, StockName: item.StockName,
-		PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, Leverage: positionLeverage(item)}
+	available, notice := positionsettlement.Preview(item, time.Now())
+	return tradeHoldingView{SettlementNotice: notice, QuantityBasis: item.QuantityBasis, ID: item.ID, Currency: item.Currency, Symbol: item.Symbol, StockName: item.StockName,
+		PositionQty: item.PositionQty, AvailableQty: available, Leverage: positionLeverage(item)}
 }
 
 func ListCustomerHoldings(c *gin.Context) {
@@ -211,7 +215,8 @@ func valueCustomerPosition(item system.TradePosition, quote positionquote.Quote)
 	}
 	item.Margin = margin
 	base, supplemental := positionbasis.MarginParts(item)
-	return tradePositionView{QuantityBasis: item.QuantityBasis, QuoteSource: quote.Source, QuoteAt: quote.At, Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: quote.Price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, BaseMargin: base, SupplementalMargin: supplemental, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate}
+	item.AvailableQty, item.SettlementNotice = positionsettlement.Preview(item, time.Now())
+	return tradePositionView{SettlementNotice: item.SettlementNotice, QuantityBasis: item.QuantityBasis, QuoteSource: quote.Source, QuoteAt: quote.At, Currency: item.Currency, ID: item.ID, Symbol: item.Symbol, StockName: item.StockName, PositionQty: item.PositionQty, AvailableQty: item.AvailableQty, CurrentPrice: quote.Price, CostPrice: item.CostPrice, TotalCost: item.TotalCost, Margin: margin, BaseMargin: base, SupplementalMargin: supplemental, Leverage: leverage, MarketValue: marketValue, ProfitLoss: profitLoss, ProfitRate: profitRate}
 }
 
 func ListCustomerTradeRecords(c *gin.Context) {
@@ -367,6 +372,10 @@ func releaseAStockPositionFreeze(tx *gorm.DB, order system.LimitOrder) error {
 }
 
 func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string, orders ...system.LimitOrder) error {
+	return executeMobileOrderAt(tx, customer, security, input, settings, result, rejection, time.Now(), orders...)
+}
+
+func executeMobileOrderAt(tx *gorm.DB, customer *system.Customer, security system.StockSecurity, input orderInput, settings mobileTradeSettings, result *orderResult, rejection *string, now time.Time, orders ...system.LimitOrder) error {
 	amount, commission, transferFee, managementFee, stampDuty, totalFee := calculateTradeFees(security, input.Quantity, input.Direction, settings)
 	var realizedProfit, realizedCost *float64
 
@@ -378,6 +387,12 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 	if positionErr != nil && !errors.Is(positionErr, gorm.ErrRecordNotFound) {
 		return positionErr
 	}
+	if positionErr == nil && position.PositionQty > 0 {
+		if err := positionsettlement.Refresh(&position, now); err != nil {
+			*rejection = err.Error()
+			return errTradeRejected
+		}
+	}
 	if len(orders) > 0 {
 		order := orders[0]
 		if order.QuantityBasis != positionbasis.Legacy && order.QuantityBasis != positionbasis.Actual {
@@ -386,7 +401,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		if positionErr == nil && position.PositionQty > 0 &&
 			(position.QuantityBasis != order.QuantityBasis ||
 				((order.QuantityBasis == positionbasis.Actual || order.Leverage >= 1) && positionLeverage(position) != order.Leverage)) {
-			*rejection = "持仓口径或杠杆与委托不一致，请撤单后重新提交"
+			*rejection = "持仓口径或孖展与委托不一致，请撤单后重新提交"
 			return errTradeRejected
 		}
 	}
@@ -410,7 +425,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 			if basis == positionbasis.Actual || order.Leverage >= 1 {
 				leverage = order.Leverage
 				if leverage < 1 {
-					return fmt.Errorf("委托杠杆快照无效")
+					return fmt.Errorf("委托孖展快照无效")
 				}
 			} else if positionErr != nil || position.PositionQty <= 0 {
 				leverage = 1
@@ -431,11 +446,15 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		}
 		customer.Balance = roundMoney(customer.Balance - totalDebit)
 		if positionErr == gorm.ErrRecordNotFound {
-			position = system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", Status: system.StatusEnabled, BuyAt: time.Now().Unix()}
+			position = system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", Status: system.StatusEnabled, BuyAt: now.Unix()}
 		} else if positionErr != nil {
 			return positionErr
 		}
 		newQty := position.PositionQty + input.Quantity
+		if err := positionsettlement.AddBuy(&position, input.Quantity, now); err != nil {
+			*rejection = err.Error()
+			return errTradeRejected
+		}
 		_, supplemental := positionbasis.MarginParts(position)
 		position.TotalCost = roundMoney(position.TotalCost + amount)
 		position.Margin = roundMoney(position.Margin + margin)
@@ -444,11 +463,11 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 		position.QuantityBasis = basis
 		position.Status = system.StatusEnabled
 		position.MarginCallLevel = 0
-		position.PositionQty, position.AvailableQty = newQty, position.AvailableQty+input.Quantity
+		position.PositionQty = newQty
 		position.CostPrice = position.TotalCost / newQty
 	} else {
 		if positionErr != nil || position.AvailableQty < input.Quantity {
-			*rejection = "可卖持仓不足"
+			*rejection = "可卖持仓不足；A股当日买入须到下一个交易日才能卖出"
 			return errTradeRejected
 		}
 		if input.Quantity != position.PositionQty && math.Mod(input.Quantity, 100) != 0 {
@@ -497,7 +516,7 @@ func executeMobileOrder(tx *gorm.DB, customer *system.Customer, security system.
 	} else if err := tx.Save(&position).Error; err != nil {
 		return err
 	}
-	record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(position), CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", Direction: input.Direction, TradePrice: security.LastPrice, Quantity: input.Quantity, Amount: amount, StampDuty: stampDuty, TransferFee: transferFee, Commission: commission + managementFee, Remark: "移动端市价成交", TradeAt: time.Now().Unix()}
+	record := system.TradeRecord{QuantityBasis: position.QuantityBasis, Leverage: positionLeverage(position), CustomerID: customer.ID, Symbol: security.Symbol, StockName: security.Name, Currency: "CNY", Direction: input.Direction, TradePrice: security.LastPrice, Quantity: input.Quantity, Amount: amount, StampDuty: stampDuty, TransferFee: transferFee, Commission: commission + managementFee, Remark: "移动端市价成交", TradeAt: now.Unix()}
 	record.RealizedProfit, record.RealizedCost = realizedProfit, realizedCost
 	if err := tx.Create(&record).Error; err != nil {
 		return err

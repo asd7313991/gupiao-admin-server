@@ -19,6 +19,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/positionbasis"
+	"api-server/util/positionsettlement"
 )
 
 const (
@@ -118,6 +119,10 @@ func PlaceLimitOrder(c *gin.Context) {
 }
 
 func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.StockSecurity, input limitOrderInput, settings mobileTradeSettings) (system.LimitOrder, string, error) {
+	return placeAStockLimitOrderDBAt(db, customerID, security, input, settings, time.Now())
+}
+
+func placeAStockLimitOrderDBAt(db *gorm.DB, customerID uint, security system.StockSecurity, input limitOrderInput, settings mobileTradeSettings, now time.Time) (system.LimitOrder, string, error) {
 	var order system.LimitOrder
 	var rejection string
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -141,6 +146,10 @@ func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.Stock
 				return err
 			}
 			if err == nil && existing.PositionQty > 0 {
+				if err := positionsettlement.Refresh(&existing, now); err != nil {
+					rejection = err.Error()
+					return errTradeRejected
+				}
 				if !positionbasis.IsFinanced(existing) || existing.Status != system.StatusEnabled {
 					rejection = "该持仓尚未完成5倍孖展转换，暂不支持新增买入挂单；原挂单仍按原快照处理"
 					return errTradeRejected
@@ -173,8 +182,12 @@ func placeAStockLimitOrderDB(db *gorm.DB, customerID uint, security system.Stock
 				rejection = "没有可卖持仓"
 				return errTradeRejected
 			}
+			if err := positionsettlement.Refresh(&position, now); err != nil {
+				rejection = err.Error()
+				return errTradeRejected
+			}
 			if position.AvailableQty < input.Quantity {
-				rejection = "可卖持仓不足"
+				rejection = "可卖持仓不足；A股当日买入须到下一个交易日才能卖出"
 				return errTradeRejected
 			}
 			if input.Quantity != position.PositionQty && math.Mod(input.Quantity, 100) != 0 {
@@ -341,12 +354,16 @@ func matchLimitOrder(id uint, settings mobileTradeSettings) (bool, error) {
 }
 
 func fillAStockLimitOrder(tx *gorm.DB, order *system.LimitOrder, security system.StockSecurity, settings mobileTradeSettings) (bool, error) {
+	return fillAStockLimitOrderAt(tx, order, security, settings, time.Now())
+}
+
+func fillAStockLimitOrderAt(tx *gorm.DB, order *system.LimitOrder, security system.StockSecurity, settings mobileTradeSettings, now time.Time) (bool, error) {
 	tradeInput := orderInput{Code: security.Code, Direction: order.Direction, Quantity: order.Quantity}
-	if message := validateSecurityTrade(security, tradeInput, settings); message != "" {
+	if message := validateSecurityTradeAt(security, tradeInput, settings, now); message != "" {
 		if err := releaseLimitOrderFreeze(tx, order); err != nil {
 			return false, err
 		}
-		order.Status, order.CancelledAt = limitOrderCancelled, time.Now().Unix()
+		order.Status, order.CancelledAt = limitOrderCancelled, now.Unix()
 		return false, tx.Save(order).Error
 	}
 	var customer system.Customer
@@ -366,7 +383,7 @@ func fillAStockLimitOrder(tx *gorm.DB, order *system.LimitOrder, security system
 	}
 	var result orderResult
 	var rejection string
-	if err := executeMobileOrder(tx, &customer, security, tradeInput, settings, &result, &rejection, *order); err != nil {
+	if err := executeMobileOrderAt(tx, &customer, security, tradeInput, settings, &result, &rejection, now, *order); err != nil {
 		if errors.Is(err, errTradeRejected) {
 			return false, fmt.Errorf("%s: %w", rejection, err)
 		}

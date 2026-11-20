@@ -19,7 +19,6 @@ import (
 	"api-server/config"
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
-	"api-server/util/verificationmaterial"
 )
 
 type customerResponse struct {
@@ -52,11 +51,7 @@ type customerResponse struct {
 }
 
 func toResponse(customer system.Customer) customerResponse {
-	verified := customer.Verified
-	if !hasIdentityMaterials(customer) {
-		verified = system.StatusDisabled
-	}
-	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, HKDBalance: customer.HKDBalance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationFace: materialDataURL(customer.VerificationFace), VerificationFaceAt: customer.VerificationFaceAt, VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
+	return customerResponse{ID: customer.ID, Phone: customer.Phone, Name: customer.Name, IDCard: customer.IDCard, BankName: customer.BankName, BankCard: customer.BankCard, BankAddress: customer.BankAddress, GroupName: customer.GroupName, Balance: customer.Balance, HKDBalance: customer.HKDBalance, StrategyBalance: customer.StrategyBalance, FrozenBalance: customer.FrozenBalance, TotalProfit: customer.TotalProfit, TotalLoss: customer.TotalLoss, Status: customer.Status, FundStatus: customer.FundStatus, Verified: customer.Verified, IDCardFront: materialDataURL(customer.IDCardFront), IDCardBack: materialDataURL(customer.IDCardBack), VerificationVideo: verificationVideoURL(customer), VerificationFace: materialDataURL(customer.VerificationFace), VerificationFaceAt: customer.VerificationFaceAt, VerificationRemark: customer.VerificationRemark, Remark: customer.Remark, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
 }
 
 func materialDataURL(path string) string {
@@ -107,10 +102,6 @@ func VerificationVideo(c *gin.Context) {
 func isVerificationMaterial(path string) bool {
 	return path != "" && filepath.IsAbs(path) &&
 		strings.HasPrefix(filepath.Clean(path), filepath.Clean(config.VerificationStorageDir)+string(os.PathSeparator))
-}
-
-func hasIdentityMaterials(customer system.Customer) bool {
-	return isVerificationMaterial(customer.IDCardFront) && isVerificationMaterial(customer.IDCardBack)
 }
 
 func List(c *gin.Context) {
@@ -303,6 +294,10 @@ func UpdateBank(c *gin.Context) {
 }
 
 func ReviewVerification(c *gin.Context) {
+	reviewVerification(c, pgdb.GetClient)
+}
+
+func reviewVerification(c *gin.Context, getDB func() *gorm.DB) {
 	var input struct {
 		ID       uint   `json:"id"`
 		Verified uint   `json:"verified"`
@@ -316,22 +311,15 @@ func ReviewVerification(c *gin.Context) {
 		response.ReturnError(c, response.INVALID_ARGUMENT, "请填写驳回原因")
 		return
 	}
+	db := getDB()
 	if input.Verified == system.StatusEnabled {
 		var customer system.Customer
-		if err := pgdb.GetClient().First(&customer, input.ID).Error; err != nil {
+		if err := db.First(&customer, input.ID).Error; err != nil {
 			response.ReturnError(c, response.NOT_FOUND, "客户不存在")
 			return
 		}
-		if !hasIdentityMaterials(customer) {
-			response.ReturnError(c, response.FAILED_PRECONDITION, "请先上传身份证正反面后再审核通过")
-			return
-		}
-		if err := verificationmaterial.CheckFace(config.VerificationStorageDir, customer.VerificationFace); err != nil {
-			response.ReturnError(c, response.FAILED_PRECONDITION, err.Error()+"；历史视频不能替代正脸照片")
-			return
-		}
 	}
-	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id = ?", input.ID).Updates(map[string]any{"verified": input.Verified, "verification_remark": input.Remark}).Error; err != nil {
+	if err := db.Model(&system.Customer{}).Where("id = ?", input.ID).Updates(map[string]any{"verified": input.Verified, "verification_remark": input.Remark}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "认证审核失败")
 		return
 	}
@@ -339,6 +327,10 @@ func ReviewVerification(c *gin.Context) {
 }
 
 func BatchReviewVerification(c *gin.Context) {
+	batchReviewVerification(c, pgdb.GetClient)
+}
+
+func batchReviewVerification(c *gin.Context, getDB func() *gorm.DB) {
 	var input struct {
 		IDs    []uint `json:"ids"`
 		Remark string `json:"remark"`
@@ -348,7 +340,8 @@ func BatchReviewVerification(c *gin.Context) {
 		return
 	}
 	var customers []system.Customer
-	if err := pgdb.GetClient().Where("id IN ?", input.IDs).Find(&customers).Error; err != nil {
+	db := getDB()
+	if err := db.Where("id IN ?", input.IDs).Find(&customers).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取客户资料失败")
 		return
 	}
@@ -356,17 +349,7 @@ func BatchReviewVerification(c *gin.Context) {
 		response.ReturnError(c, response.NOT_FOUND, "部分客户不存在")
 		return
 	}
-	for _, customer := range customers {
-		if !hasIdentityMaterials(customer) {
-			response.ReturnError(c, response.FAILED_PRECONDITION, "所选客户中存在未上传身份证正反面的资料，无法批量通过")
-			return
-		}
-		if err := verificationmaterial.CheckFace(config.VerificationStorageDir, customer.VerificationFace); err != nil {
-			response.ReturnError(c, response.FAILED_PRECONDITION, fmt.Sprintf("客户%d正脸材料不完整：%s，无法批量通过", customer.ID, err.Error()))
-			return
-		}
-	}
-	if err := pgdb.GetClient().Model(&system.Customer{}).Where("id IN ?", input.IDs).Updates(map[string]any{"verified": uint(1), "verification_remark": input.Remark}).Error; err != nil {
+	if err := db.Model(&system.Customer{}).Where("id IN ?", input.IDs).Updates(map[string]any{"verified": uint(1), "verification_remark": input.Remark}).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "批量审核失败")
 		return
 	}

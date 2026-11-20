@@ -1,0 +1,14 @@
+.git
+.vscode
+.gocache
+log
+private/verification
+docker/postgres_data
+bin
+bulid
+dist
+*.log
+*.pid
+*.exe
+api-server
+server

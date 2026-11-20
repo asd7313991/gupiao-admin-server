@@ -13,6 +13,7 @@ func TestValidateVerificationMaterials(t *testing.T) {
 		message  string
 	}{
 		{"未上传材料", system.Customer{}, "请先上传身份证正反面"},
+		{"人工通过后自行重提仍需材料", system.Customer{Verified: system.StatusEnabled}, "请先上传身份证正反面"},
 		{"缺少国徽面", system.Customer{IDCardFront: "front.jpg", VerificationVideo: "video.mp4"}, "请先上传身份证正反面"},
 		{"缺少人像面", system.Customer{IDCardBack: "back.jpg", VerificationVideo: "video.mp4"}, "请先上传身份证正反面"},
 		{"缺少照片", system.Customer{IDCardFront: "front.jpg", IDCardBack: "back.jpg"}, "请先拍摄并上传正脸照片"},

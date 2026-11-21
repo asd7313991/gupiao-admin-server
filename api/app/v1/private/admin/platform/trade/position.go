@@ -2,11 +2,13 @@ package trade
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -249,7 +251,46 @@ func SavePosition(c *gin.Context) {
 			response.ReturnError(c, response.INVALID_ARGUMENT, err.Error())
 			return
 		}
-		if err := pgdb.GetClient().Create(&input.TradePosition).Error; err != nil {
+		var rejection string
+		err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+			var lockedCustomer system.Customer
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedCustomer, input.CustomerID).Error; err != nil {
+				return err
+			}
+			var existing []system.TradePosition
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("customer_id = ? AND symbol = ? AND position_qty > 0", input.CustomerID, input.Symbol).
+				Order("id ASC").
+				Find(&existing).Error; err != nil {
+				return err
+			}
+			merged, duplicateIDs, shouldMerge, err := mergeManualPositions(existing, input.TradePosition, time.Now())
+			if err != nil {
+				rejection = err.Error()
+				return err
+			}
+			if !shouldMerge {
+				if err := tx.Create(&input.TradePosition).Error; err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := tx.Save(&merged).Error; err != nil {
+				return err
+			}
+			for _, id := range duplicateIDs {
+				if err := tx.Delete(&system.TradePosition{}, id).Error; err != nil {
+					return err
+				}
+			}
+			input.TradePosition = merged
+			return nil
+		})
+		if rejection != "" {
+			response.ReturnError(c, response.FAILED_PRECONDITION, rejection)
+			return
+		}
+		if err != nil {
 			response.ReturnError(c, response.DATA_LOSS, "新增持仓失败")
 			return
 		}
@@ -341,6 +382,122 @@ func SavePosition(c *gin.Context) {
 		}
 	}
 	response.ReturnData(c, input.TradePosition)
+}
+
+func mergeManualPositions(existing []system.TradePosition, incoming system.TradePosition, now time.Time) (system.TradePosition, []uint, bool, error) {
+	compatible := make([]system.TradePosition, 0, len(existing))
+	for _, position := range existing {
+		if position.CustomerID != incoming.CustomerID || position.Symbol != incoming.Symbol || position.PositionQty <= 0 {
+			continue
+		}
+		if position.Currency != incoming.Currency ||
+			position.QuantityBasis != incoming.QuantityBasis ||
+			positionbasis.Leverage(position) != positionbasis.Leverage(incoming) ||
+			position.Status != system.StatusEnabled {
+			return system.TradePosition{}, nil, false, errors.New("该客户已有同一股票但持仓口径或孖展不同，请先核对或转换后再新增")
+		}
+		compatible = append(compatible, position)
+	}
+	if len(compatible) == 0 {
+		return incoming, nil, false, nil
+	}
+	sort.Slice(compatible, func(i, j int) bool {
+		return compatible[i].ID < compatible[j].ID
+	})
+
+	merged := compatible[0]
+	duplicateIDs := make([]uint, 0, len(compatible)-1)
+	var totalQuantity, totalCost, totalMargin, totalSupplemental float64
+	var availableQuantity, unsettledQuantity float64
+	var sellableAt int64
+	buyAt := incoming.BuyAt
+	marginCallLevel := incoming.MarginCallLevel
+	allSettlementVerified := incoming.SettlementVerified
+
+	positions := append(compatible, incoming)
+	for _, position := range positions {
+		if position.PositionQty <= 0 || math.IsNaN(position.PositionQty) || math.IsInf(position.PositionQty, 0) {
+			return system.TradePosition{}, nil, false, errors.New("已有持仓股数异常，暂不能自动合并")
+		}
+		positionCost := position.TotalCost
+		if positionCost == 0 {
+			positionCost = position.PositionQty * position.CostPrice
+		}
+		if positionCost < 0 || math.IsNaN(positionCost) || math.IsInf(positionCost, 0) ||
+			position.Margin < 0 || math.IsNaN(position.Margin) || math.IsInf(position.Margin, 0) {
+			return system.TradePosition{}, nil, false, errors.New("已有持仓成本或担保金异常，暂不能自动合并")
+		}
+
+		totalQuantity += position.PositionQty
+		totalCost += positionCost
+		totalMargin += position.Margin
+		_, supplemental := positionbasis.MarginParts(position)
+		if supplemental < 0 || math.IsNaN(supplemental) || math.IsInf(supplemental, 0) {
+			return system.TradePosition{}, nil, false, errors.New("已有持仓追加担保金异常，暂不能自动合并")
+		}
+		totalSupplemental += supplemental
+		if position.MarginCallLevel > marginCallLevel {
+			marginCallLevel = position.MarginCallLevel
+		}
+		if position.BuyAt > 0 && (buyAt == 0 || position.BuyAt < buyAt) {
+			buyAt = position.BuyAt
+		}
+
+		if !position.SettlementVerified {
+			allSettlementVerified = false
+			continue
+		}
+		if err := positionsettlement.Refresh(&position, now); err != nil {
+			return system.TradePosition{}, nil, false, err
+		}
+		if math.Abs(position.AvailableQty+position.UnsettledQty-position.PositionQty) > 0.000001 {
+			return system.TradePosition{}, nil, false, errors.New("已有持仓交收数量异常，请先核对T+1交收信息")
+		}
+		availableQuantity += position.AvailableQty
+		unsettledQuantity += position.UnsettledQty
+		if position.UnsettledQty > 0 && position.SellableAt > sellableAt {
+			sellableAt = position.SellableAt
+		}
+	}
+
+	merged.CustomerID = incoming.CustomerID
+	merged.Symbol = incoming.Symbol
+	merged.StockName = incoming.StockName
+	merged.Currency = incoming.Currency
+	merged.QuantityBasis = incoming.QuantityBasis
+	merged.Leverage = incoming.Leverage
+	merged.Status = system.StatusEnabled
+	merged.PositionQty = totalQuantity
+	merged.TotalCost = roundPositionMoney(totalCost)
+	merged.CostPrice = merged.TotalCost / totalQuantity
+	merged.CurrentPrice = incoming.CurrentPrice
+	merged.Margin = roundPositionMoney(totalMargin)
+	merged.MarginCallLevel = marginCallLevel
+	merged.BuyAt = buyAt
+	if allSettlementVerified {
+		merged.SettlementVerified = true
+		merged.AvailableQty = availableQuantity
+		merged.UnsettledQty = unsettledQuantity
+		if unsettledQuantity > 0 {
+			merged.SellableAt = sellableAt
+		} else {
+			merged.SellableAt = 0
+		}
+	} else {
+		merged.SettlementVerified = false
+		merged.AvailableQty = 0
+		merged.UnsettledQty = 0
+		merged.SellableAt = 0
+	}
+	positionbasis.SetSupplementalMargin(&merged, roundPositionMoney(totalSupplemental))
+	merged.MarketValue, merged.ProfitLoss, merged.ProfitRate = positionbasis.Values(merged, merged.CurrentPrice)
+	if merged.TotalCost > 0 {
+		merged.ProfitRate = roundPositionMoney(merged.ProfitLoss / merged.TotalCost * 100)
+	}
+	for _, position := range compatible[1:] {
+		duplicateIDs = append(duplicateIDs, position.ID)
+	}
+	return merged, duplicateIDs, true, nil
 }
 
 func securityLookupValues(value string) []string {

@@ -20,6 +20,7 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/positionbasis"
+	"api-server/util/positionsettlement"
 )
 
 func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
@@ -67,7 +68,7 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	existing := system.TradePosition{
-		CustomerID: customer.ID, Symbol: "001317.SZ", Currency: "CNY",
+		CustomerID: customer.ID, Symbol: "000002.SZ", Currency: "CNY",
 		QuantityBasis: positionbasis.Actual, PositionQty: 301, AvailableQty: 301,
 		CostPrice: 52.45, CurrentPrice: 52.45, MarketValue: 15787.45,
 		TotalCost: 15787.45, Margin: 15787.45, Leverage: 1, Status: 1,
@@ -116,7 +117,7 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 			t.Fatalf("实际=%v，预期=%v", actual, expected)
 		}
 	}
-	for _, submittedLeverage := range []float64{0, 1, 5, 20} {
+	for index, submittedLeverage := range []float64{0, 1, 5, 20} {
 		code, saved := save(http.MethodPost, map[string]any{
 			"phone": customer.Phone, "symbol": "001317.SZ", "cost_price": 52.45,
 			"position_qty": 301, "leverage": submittedLeverage, "quantity_basis": 0,
@@ -128,21 +129,83 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		if err := db.First(&stored, saved.ID).Error; err != nil {
 			t.Fatal(err)
 		}
+		expectedQuantity := 301 * float64(index+1)
+		expectedCost := expectedQuantity * 52.45
 		for _, record := range []system.TradePosition{saved, stored} {
 			if record.QuantityBasis != positionbasis.Actual || record.Leverage != 5 || record.Currency != "CNY" ||
-				record.PositionQty != 301 || record.AvailableQty != 0 || record.UnsettledQty != 301 || !record.SettlementVerified || record.CostPrice != 52.45 {
+				record.PositionQty != expectedQuantity || record.AvailableQty != 0 || record.UnsettledQty != expectedQuantity ||
+				!record.SettlementVerified {
 				t.Fatalf("实际股数、成本或5倍孖展错误：%+v", record)
 			}
-			near(record.TotalCost, 15787.45)
-			near(record.Margin, 3157.49)
-			near(record.MarketValue, 15787.45)
+			near(record.TotalCost, expectedCost)
+			near(record.CostPrice, 52.45)
+			near(record.Margin, expectedCost/5)
+			near(record.MarketValue, expectedCost)
 			near(record.ProfitLoss, 0)
 		}
 		refreshPositionMarketValues(&stored, 53.45)
-		near(stored.MarketValue, 16088.45)
-		near(stored.ProfitLoss, 301)
-		near(stored.Margin, 3157.49)
-		near(stored.ProfitRate, positionbasis.Money(301/15787.45*100))
+		near(stored.MarketValue, expectedQuantity*53.45)
+		near(stored.ProfitLoss, expectedQuantity)
+		near(stored.Margin, expectedCost/5)
+		near(stored.ProfitRate, positionbasis.Money(expectedQuantity/expectedCost*100))
+	}
+
+	var target system.TradePosition
+	if err := db.Where("customer_id = ? AND symbol = ? AND leverage = ?", customer.ID, "001317.SZ", 5).
+		First(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	nextTradingDay, err := positionsettlement.NextTradingDay(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterTradingDay, err := positionsettlement.NextTradingDay(nextTradingDay.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicates := []system.TradePosition{
+		{
+			CustomerID: customer.ID, Symbol: target.Symbol, StockName: target.StockName, Currency: "CNY",
+			QuantityBasis: positionbasis.Actual, PositionQty: 100, AvailableQty: 100, SettlementVerified: true,
+			CostPrice: 10, TotalCost: 1000, Margin: 200, Leverage: 5, CurrentPrice: 52.45,
+			Status: system.StatusEnabled, BuyAt: time.Now().AddDate(0, 0, -10).Unix(),
+		},
+		{
+			CustomerID: customer.ID, Symbol: target.Symbol, StockName: target.StockName, Currency: "CNY",
+			QuantityBasis: positionbasis.Actual, PositionQty: 50, AvailableQty: 30, UnsettledQty: 20,
+			SellableAt: laterTradingDay.Unix(), SettlementVerified: true,
+			CostPrice: 20, TotalCost: 1000, Margin: 200, Leverage: 5, CurrentPrice: 52.45,
+			Status: system.StatusEnabled, BuyAt: time.Now().AddDate(0, 0, -5).Unix(),
+		},
+	}
+	if err := db.Create(&duplicates).Error; err != nil {
+		t.Fatal(err)
+	}
+	mergeCode, merged := save(http.MethodPost, map[string]any{
+		"phone": customer.Phone, "symbol": "001317.SZ", "cost_price": 52.45,
+		"position_qty": 301, "buy_at": time.Now().Unix(),
+	})
+	if mergeCode != 200 || merged.ID != target.ID {
+		t.Fatalf("新持仓应合并到现有持仓：%d，%+v", mergeCode, merged)
+	}
+	if merged.PositionQty != 1655 || merged.AvailableQty != 130 || merged.UnsettledQty != 1525 ||
+		merged.SellableAt != laterTradingDay.Unix() || !merged.SettlementVerified {
+		t.Fatalf("合并后数量或T+1交收状态错误：%+v", merged)
+	}
+	near(merged.TotalCost, 80937.25)
+	near(merged.CostPrice, 80937.25/1655)
+	near(merged.Margin, 16187.45)
+	for _, duplicate := range duplicates {
+		var removed system.TradePosition
+		if err := db.Unscoped().First(&removed, duplicate.ID).Error; err != nil || !removed.DeletedAt.Valid {
+			t.Fatalf("已有重复持仓应保留记录并软删除：%+v，%v", removed, err)
+		}
+	}
+	var activeRows int64
+	if err := db.Model(&system.TradePosition{}).
+		Where("customer_id = ? AND symbol = ? AND status = ? AND position_qty > 0", customer.ID, target.Symbol, system.StatusEnabled).
+		Count(&activeRows).Error; err != nil || activeRows != 1 {
+		t.Fatalf("合并后同一股票应只保留一条活跃持仓：%d，%v", activeRows, err)
 	}
 	var untouched system.TradePosition
 	if err := db.First(&untouched, existing.ID).Error; err != nil {
@@ -180,8 +243,8 @@ func TestSaveManualPositionFiveTimesIntegration(t *testing.T) {
 		PendingBuyAt      int64   `json:"pending_buy_at"`
 	}{saved, true, 100, time.Now().Unix()}
 	code, saved = save(http.MethodPut, review)
-	if code != 200 || !saved.SettlementVerified || saved.AvailableQty != 201 || saved.UnsettledQty != 100 {
-		t.Fatal("旧持仓审核后应拆分201可卖和100待交收", code, saved)
+	if code != 200 || !saved.SettlementVerified || saved.AvailableQty != saved.PositionQty-100 || saved.UnsettledQty != 100 {
+		t.Fatal("旧持仓审核后应拆分为可卖股数和100待交收", code, saved)
 	}
 	var reviews int64
 	if err := db.Model(&system.PositionSettlementReview{}).Where("position_id = ?", saved.ID).Count(&reviews).Error; err != nil || reviews != 1 {

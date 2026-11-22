@@ -17,9 +17,14 @@ import (
 )
 
 var mobileArticleTypes = map[string]struct{}{
-	"新手必看": {},
-	"法律声明": {},
-	"帮助中心": {},
+	"新手必看":     {},
+	"法律声明":     {},
+	"帮助中心":     {},
+	"常见问题":     {},
+	"交易规则（A股）": {},
+	"交易规则（港股）": {},
+	"费用收取（A股）": {},
+	"费用收取（港股）": {},
 }
 
 type mobileArticleView struct {

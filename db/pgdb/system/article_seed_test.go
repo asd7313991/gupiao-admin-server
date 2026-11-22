@@ -71,8 +71,18 @@ func TestSeedDefaultArticlesIntegration(t *testing.T) {
 		if err := db.Find(&articles).Error; err != nil {
 			t.Fatal(err)
 		}
-		if len(articles) != 3 {
+		if len(articles) != 8 {
 			t.Fatalf("默认文章数量不符：%d", len(articles))
+		}
+		for _, articleType := range []string{
+			"新手必看", "法律声明", "帮助中心", "交易规则（A股）", "交易规则（港股）",
+			"费用收取（A股）", "费用收取（港股）", "常见问题",
+		} {
+			var article AppArticle
+			if err := db.Where("type = ?", articleType).First(&article).Error; err != nil ||
+				article.Status != StatusEnabled || strings.TrimSpace(article.Content) == "" {
+				t.Errorf("默认文章类型 %q 应启用且包含正文：%v", articleType, err)
+			}
 		}
 		var legal AppArticle
 		if err := db.Where("type = ?", "法律声明").First(&legal).Error; err != nil {

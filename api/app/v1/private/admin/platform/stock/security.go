@@ -317,13 +317,19 @@ func saveASecurities(ctx context.Context, db *gorm.DB, securities []system.Stock
 }
 
 func fillTencentPrices(client *http.Client, securities []system.StockSecurity) error {
+	expectedQuoteAt := expectedAShareQuoteTime(time.Now())
 	indexBySymbol := make(map[string]int)
 	symbols := make([]string, 0)
 	for index := range securities {
-		if securities[index].LastPrice > 0 {
+		security := securities[index]
+		needsRefresh := security.LastPrice <= 0 || security.QuoteAt <= 0
+		if !needsRefresh && (security.Board == "科创板" || security.Board == "北交所") {
+			needsRefresh = expectedQuoteAt-security.QuoteAt > staleBoardQuoteToleranceSeconds
+		}
+		if !needsRefresh {
 			continue
 		}
-		symbol := tencentSymbol(securities[index])
+		symbol := tencentSymbol(security)
 		indexBySymbol[symbol] = index
 		symbols = append(symbols, symbol)
 	}
@@ -339,6 +345,9 @@ func fillTencentPrices(client *http.Client, securities []system.StockSecurity) e
 		for symbol, quote := range quotes {
 			index, exists := indexBySymbol[symbol]
 			if !exists || quote.Price <= 0 {
+				continue
+			}
+			if securities[index].LastPrice > 0 && quote.QuoteAt <= securities[index].QuoteAt {
 				continue
 			}
 			securities[index].LastPrice = quote.Price

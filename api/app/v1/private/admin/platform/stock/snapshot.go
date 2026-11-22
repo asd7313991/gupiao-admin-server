@@ -15,6 +15,31 @@ import (
 
 var eastmoneySyncLock sync.Mutex
 
+const staleBoardQuoteToleranceSeconds = 180
+
+func expectedAShareQuoteTime(now time.Time) int64 {
+	china := time.FixedZone("Asia/Shanghai", 8*60*60)
+	current := now.In(china)
+	minute := current.Hour()*60 + current.Minute()
+	day := time.Date(current.Year(), current.Month(), current.Day(), 0, 0, 0, 0, china)
+	if current.Weekday() == time.Saturday || current.Weekday() == time.Sunday || minute < 570 {
+		for {
+			day = day.AddDate(0, 0, -1)
+			if day.Weekday() != time.Saturday && day.Weekday() != time.Sunday {
+				break
+			}
+		}
+		return time.Date(day.Year(), day.Month(), day.Day(), 15, 0, 0, 0, china).Unix()
+	}
+	if minute >= 690 && minute < 780 {
+		return time.Date(day.Year(), day.Month(), day.Day(), 11, 30, 0, 0, china).Unix()
+	}
+	if minute >= 900 {
+		return time.Date(day.Year(), day.Month(), day.Day(), 15, 0, 0, 0, china).Unix()
+	}
+	return now.Unix()
+}
+
 func fetchEastmoneySnapshot(client *http.Client, maxSyncRows int) ([]system.StockSecurity, error) {
 	if maxSyncRows <= 0 || maxSyncRows > 10000 {
 		maxSyncRows = 10000

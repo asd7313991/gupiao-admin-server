@@ -151,4 +151,46 @@ func TestSeedDefaultArticlesIntegration(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("扩充默认新手指南且保留后台自定义", func(t *testing.T) {
+		if err := db.Exec("TRUNCATE TABLE app_articles RESTART IDENTITY").Error; err != nil {
+			t.Fatal(err)
+		}
+		legacyRules := strings.Join([]string{
+			`<h2>一、交易方式与时间</h2><p>A股通过平台模拟交易功能提交买入或卖出。默认交易时间为工作日 09:30–11:30、13:00–15:00；实际以后台设置和提交时校验为准。</p>`,
+			`<h2>二、买入数量</h2><p>普通A股买入数量为100股的整数倍。科创板最低买入数量以后台设置为准，当前默认200股；达到最低数量后可按整数股输入。</p>`,
+			`<h2>三、卖出与交收</h2><p>A股实行T+1交收，新买入的股数通常需到下一交易日才可卖出。全部卖出时可按系统规则处理持仓中的零股；可卖数量以持仓账本为准。</p>`,
+			`<h2>四、交易限制</h2><p>ST股票、新股、涨幅限制、实名认证、账户状态、资金及持仓等条件可能影响下单。系统会按实际配置校验并显示拒绝原因。</p>`,
+			`<h2>五、孖展与风险</h2><p>如账户启用孖展，所需本金、费用、追缴担保金及强制平仓条件以账户页面和后台当前规则为准。价格波动可能造成损失，不应将模拟估值视为收益保证。</p>`,
+		}, "\n")
+		articles := []AppArticle{
+			{Title: "交易规则（A股）", Type: "交易规则（A股）", Content: legacyRules, Status: StatusDisabled},
+			{Title: "常见问题", Type: "常见问题", Content: "<p>管理员维护的常见问题</p>", Status: StatusDisabled},
+		}
+		for i := range articles {
+			if err := db.Create(&articles[i]).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := seedDefaultArticles(db); err != nil {
+			t.Fatal(err)
+		}
+
+		var updated AppArticle
+		if err := db.Where("type = ? AND title = ?", "交易规则（A股）", "交易规则（A股）").First(&updated).Error; err != nil {
+			t.Fatal(err)
+		}
+		if updated.Content == legacyRules || !strings.Contains(updated.Content, "八、成交后核对") ||
+			strings.Count(updated.Content, "<h2>") < 8 || updated.Status != StatusDisabled {
+			t.Fatal("应扩充旧默认内容并保留文章状态")
+		}
+
+		var custom AppArticle
+		if err := db.Where("type = ? AND title = ?", "常见问题", "常见问题").First(&custom).Error; err != nil {
+			t.Fatal(err)
+		}
+		if custom.Content != "<p>管理员维护的常见问题</p>" || custom.Status != StatusDisabled {
+			t.Fatal("不应覆盖后台自定义内容或状态")
+		}
+	})
 }

@@ -331,6 +331,16 @@ type TradeRecord struct {
 	TradeAt        int64    `json:"trade_at" gorm:"index:idx_trade_record_time"`
 }
 
+// TradeRecordBasisReview 审计后台对单笔成交口径的修正。
+type TradeRecordBasisReview struct {
+	gorm.Model
+	TradeRecordID uint   `gorm:"index;not null"`
+	ReviewerID    uint   `gorm:"not null"`
+	BeforeBasis   uint   `gorm:"not null"`
+	AfterBasis    uint   `gorm:"not null"`
+	Reason        string `gorm:"type:text;not null"`
+}
+
 // LimitOrder 保存客户限价委托及对应冻结资金或持仓。
 type LimitOrder struct {
 	gorm.Model

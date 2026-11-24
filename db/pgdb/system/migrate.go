@@ -45,6 +45,7 @@ func migrateTable(db *gorm.DB) error {
 		&PositionSettlementReview{},
 		&PositionBasisConversion{},
 		&TradeRecord{},
+		&TradeRecordBasisReview{},
 		&LimitOrder{},
 		&CustomerWatchlist{},
 		&StockSecurity{},

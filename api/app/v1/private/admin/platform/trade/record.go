@@ -1,9 +1,14 @@
 package trade
 
 import (
+	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"api-server/api/middleware"
 	"api-server/api/response"
@@ -23,6 +28,7 @@ type recordResponse struct {
 	TradePrice     float64  `json:"trade_price"`
 	Quantity       float64  `json:"quantity"`
 	Amount         float64  `json:"amount"`
+	QuantityBasis  uint     `json:"quantity_basis"`
 	StampDuty      float64  `json:"stamp_duty"`
 	TransferFee    float64  `json:"transfer_fee"`
 	Commission     float64  `json:"commission"`
@@ -84,6 +90,68 @@ func SaveRecord(c *gin.Context) {
 		return
 	}
 	response.ReturnData(c, input)
+}
+
+func AdjustRecordBasis(c *gin.Context) {
+	var input struct {
+		ID            uint   `json:"id" form:"id"`
+		QuantityBasis uint   `json:"quantity_basis" form:"quantity_basis"`
+		Reason        string `json:"reason" form:"reason"`
+	}
+	if !middleware.CheckParam(&input, c) || input.ID == 0 || input.QuantityBasis > 1 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "成交记录或口径参数无效")
+		return
+	}
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.Reason == "" || utf8.RuneCountInString(input.Reason) > 500 {
+		response.ReturnError(c, response.INVALID_ARGUMENT, "请填写不超过500字的修正原因")
+		return
+	}
+
+	var record system.TradeRecord
+	var rejection string
+	err := pgdb.GetClient().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&record, input.ID).Error; err != nil {
+			return err
+		}
+		symbol := strings.ToUpper(strings.TrimSpace(record.Symbol))
+		if !strings.HasSuffix(symbol, ".SH") && !strings.HasSuffix(symbol, ".SZ") && !strings.HasSuffix(symbol, ".BJ") {
+			rejection = "口径修正仅支持A股成交记录"
+			return fmt.Errorf("%s", rejection)
+		}
+		if record.QuantityBasis == input.QuantityBasis {
+			rejection = "该成交记录已经是所选口径"
+			return fmt.Errorf("%s", rejection)
+		}
+		review := system.TradeRecordBasisReview{
+			TradeRecordID: record.ID,
+			ReviewerID:    middleware.GetCurrentUserID(c),
+			BeforeBasis:   record.QuantityBasis,
+			AfterBasis:    input.QuantityBasis,
+			Reason:        input.Reason,
+		}
+		if err := tx.Model(&record).Update("quantity_basis", input.QuantityBasis).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&review).Error; err != nil {
+			return err
+		}
+		record.QuantityBasis = input.QuantityBasis
+		return nil
+	})
+	if rejection != "" {
+		response.ReturnError(c, response.FAILED_PRECONDITION, rejection)
+		return
+	}
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			response.ReturnError(c, response.NOT_FOUND, "成交记录不存在")
+			return
+		}
+		response.ReturnError(c, response.DATA_LOSS, "修正成交口径失败")
+		return
+	}
+	response.ReturnData(c, record)
 }
 
 func DeleteRecord(c *gin.Context) {

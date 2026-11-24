@@ -111,6 +111,7 @@ func registerPlatformRoutes(group *gin.RouterGroup) {
 	tradeGroup.GET("/records", platformTrade.ListRecords)
 	tradeGroup.POST("/records", platformTrade.SaveRecord)
 	tradeGroup.PUT("/records", platformTrade.SaveRecord)
+	tradeGroup.PUT("/records/basis", platformTrade.AdjustRecordBasis)
 	tradeGroup.DELETE("/records", platformTrade.DeleteRecord)
 
 	settingGroup := group.Group("/setting", middleware.PlatformMenuAccess)

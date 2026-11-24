@@ -154,7 +154,7 @@ func cancelCustomerPendingOrdersForMarket(tx *gorm.DB, customer *system.Customer
 func forceCloseAllPositions(tx *gorm.DB, customer *system.Customer, positions []system.TradePosition, closedAt int64, reason string) error {
 	for index := range positions {
 		position := &positions[index]
-		if err := positionsettlement.Refresh(position, time.Unix(closedAt, 0)); err != nil {
+		if err := reconcilePositionSettlement(tx, position, time.Unix(closedAt, 0)); err != nil {
 			return fmt.Errorf("%s: %w", position.Symbol, err)
 		}
 		if !positionsettlement.HongKong(*position) && position.UnsettledQty > 0 {

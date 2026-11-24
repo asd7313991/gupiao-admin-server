@@ -60,6 +60,11 @@ func ListCustomerPositionValuations(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "读取持仓失败")
 		return
 	}
+	if err := reconcilePositionViews(pgdb.GetClient(), items, time.Now()); err != nil {
+		zap.L().Error("核对持仓成交记录失败", zap.Uint("customer_id", customerID), zap.Error(err))
+		response.ReturnError(c, response.DATA_LOSS, "读取持仓交收记录失败")
+		return
+	}
 	symbols := make([]string, 0, len(items))
 	for _, item := range items {
 		symbols = append(symbols, item.Symbol)

@@ -98,6 +98,35 @@ func TestNewPositionAndHistoricalReview(t *testing.T) {
 	}
 }
 
+func TestReconcileLegacyPositionFromCompleteTradeBatches(t *testing.T) {
+	firstBuy := moment(t, "2026-11-20 10:00:00")
+	mondayBuy := moment(t, "2026-11-23 10:00:00")
+	trades := []system.TradeRecord{
+		{Symbol: "600103.SH", Direction: "买入", Quantity: 400, TradeAt: firstBuy.Unix()},
+		{Symbol: "600103.SH", Direction: "买入", Quantity: 300, TradeAt: mondayBuy.Unix()},
+		{Symbol: "600103.SH", Direction: "卖出", Quantity: 200, TradeAt: moment(t, "2026-11-23 11:00:00").Unix()},
+		{Symbol: "600103.SH", Direction: "买入", Quantity: 300, TradeAt: moment(t, "2026-11-24 10:00:00").Unix()},
+	}
+	position := system.TradePosition{Symbol: "600103.SH", PositionQty: 800, AvailableQty: 800, BuyAt: firstBuy.Unix()}
+	if err := ReconcileLegacy(&position, trades, moment(t, "2026-11-24 10:30:00")); err != nil {
+		t.Fatal(err)
+	}
+	if !position.SettlementVerified || position.AvailableQty != 500 || position.UnsettledQty != 300 ||
+		position.SellableAt != moment(t, "2026-11-25 00:00:00").Unix() {
+		t.Fatalf("应按成交批次解锁旧股，只冻结当日买入：%+v", position)
+	}
+	if err := Refresh(&position, moment(t, "2026-11-25 00:00:00")); err != nil ||
+		position.AvailableQty != 800 || position.UnsettledQty != 0 {
+		t.Fatalf("下一交易日应解锁剩余批次：%+v, %v", position, err)
+	}
+
+	incomplete := system.TradePosition{Symbol: "600103.SH", PositionQty: 900, AvailableQty: 900, BuyAt: firstBuy.Unix()}
+	if err := ReconcileLegacy(&incomplete, trades, moment(t, "2026-11-24 10:30:00")); !errors.Is(err, ErrReview) ||
+		incomplete.SettlementVerified || incomplete.AvailableQty != 900 {
+		t.Fatalf("成交记录与当前持仓不符时必须保留核对保护：%+v, %v", incomplete, err)
+	}
+}
+
 func TestHongKongStaysTPlusZero(t *testing.T) {
 	now := moment(t, "2026-11-20 10:00:00")
 	p := system.TradePosition{Symbol: "00700.HK", Currency: "HKD", PositionQty: 100, AvailableQty: 50}

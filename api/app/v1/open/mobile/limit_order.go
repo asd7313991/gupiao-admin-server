@@ -19,7 +19,6 @@ import (
 	"api-server/db/pgdb"
 	"api-server/db/pgdb/system"
 	"api-server/util/positionbasis"
-	"api-server/util/positionsettlement"
 )
 
 const (
@@ -146,7 +145,7 @@ func placeAStockLimitOrderDBAt(db *gorm.DB, customerID uint, security system.Sto
 				return err
 			}
 			if err == nil && existing.PositionQty > 0 {
-				if err := positionsettlement.Refresh(&existing, now); err != nil {
+				if err := reconcilePositionSettlement(tx, &existing, now); err != nil {
 					rejection = err.Error()
 					return errTradeRejected
 				}
@@ -182,7 +181,7 @@ func placeAStockLimitOrderDBAt(db *gorm.DB, customerID uint, security system.Sto
 				rejection = "没有可卖持仓"
 				return errTradeRejected
 			}
-			if err := positionsettlement.Refresh(&position, now); err != nil {
+			if err := reconcilePositionSettlement(tx, &position, now); err != nil {
 				rejection = err.Error()
 				return errTradeRejected
 			}

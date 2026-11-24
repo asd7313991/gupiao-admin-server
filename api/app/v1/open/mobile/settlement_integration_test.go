@@ -33,11 +33,29 @@ func TestAStockSettlementOrderLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	security := system.StockSecurity{Code: "600103", Symbol: "600103.SH", Name: "交收测试", LastPrice: 10, Status: 1}
+	firstBuyAt := now.AddDate(0, 0, -2).Unix()
 	position := system.TradePosition{CustomerID: customer.ID, Symbol: security.Symbol, Currency: "CNY",
-		PositionQty: 1000, AvailableQty: 1000, SettlementVerified: true, TotalCost: 10000,
+		PositionQty: 1000, AvailableQty: 1000, BuyAt: firstBuyAt, TotalCost: 10000,
 		CostPrice: 10, Margin: 2000, Leverage: 5, QuantityBasis: 1, Status: 1}
 	if err := db.Create(&position).Error; err != nil {
 		t.Fatal(err)
+	}
+	if err := db.Create(&[]system.TradeRecord{
+		{CustomerID: customer.ID, Symbol: security.Symbol, Currency: "CNY", Direction: "买入", Quantity: 600, TradeAt: firstBuyAt},
+		{CustomerID: customer.ID, Symbol: security.Symbol, Currency: "CNY", Direction: "买入", Quantity: 400, TradeAt: now.AddDate(0, 0, -1).Unix()},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	displayPositions := []system.TradePosition{position}
+	if err := reconcilePositionViews(db, displayPositions, now); err != nil ||
+		!displayPositions[0].SettlementVerified ||
+		displayPositions[0].AvailableQty != 1000 || displayPositions[0].UnsettledQty != 0 {
+		t.Fatal("完整买入成交记录应还原分批买入且全部已交收的旧持仓", displayPositions[0], err)
+	}
+	var storedPosition system.TradePosition
+	if err := db.First(&storedPosition, position.ID).Error; err != nil ||
+		storedPosition.SettlementVerified || storedPosition.AvailableQty != position.AvailableQty {
+		t.Fatal("只读持仓展示不能持久化自动核对结果", storedPosition, err)
 	}
 	settings := mobileTradeSettings{}
 	settings.Trade.AllDay = true

@@ -160,6 +160,31 @@ func customerPositionQuery(db *gorm.DB, customerID uint, market string) *gorm.DB
 	return tradeMarketScope(db, market).Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC")
 }
 
+func reconcilePositionSettlement(db *gorm.DB, position *system.TradePosition, now time.Time) error {
+	if positionsettlement.HongKong(*position) || position.SettlementVerified {
+		return positionsettlement.Refresh(position, now)
+	}
+	var records []system.TradeRecord
+	if err := db.Where("customer_id = ? AND symbol = ?", position.CustomerID, position.Symbol).
+		Order("trade_at ASC, id ASC").Find(&records).Error; err != nil {
+		return fmt.Errorf("读取持仓成交记录失败: %w", err)
+	}
+	return positionsettlement.ReconcileLegacy(position, records, now)
+}
+
+func reconcilePositionViews(db *gorm.DB, items []system.TradePosition, now time.Time) error {
+	for index := range items {
+		if positionsettlement.HongKong(items[index]) || items[index].SettlementVerified {
+			continue
+		}
+		if err := reconcilePositionSettlement(db, &items[index], now); err != nil &&
+			!errors.Is(err, positionsettlement.ErrReview) {
+			return err
+		}
+	}
+	return nil
+}
+
 func holdingView(item system.TradePosition) tradeHoldingView {
 	available, notice := positionsettlement.Preview(item, time.Now())
 	return tradeHoldingView{SettlementNotice: notice, QuantityBasis: item.QuantityBasis, ID: item.ID, Currency: item.Currency, Symbol: item.Symbol, StockName: item.StockName,
@@ -172,6 +197,11 @@ func ListCustomerHoldings(c *gin.Context) {
 	var items []system.TradePosition
 	if err := customerPositionQuery(pgdb.GetClient(), customerID, c.Query("market")).Find(&items).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取持仓数量失败")
+		return
+	}
+	if err := reconcilePositionViews(pgdb.GetClient(), items, time.Now()); err != nil {
+		zap.L().Error("核对持仓成交记录失败", zap.Uint("customer_id", customerID), zap.Error(err))
+		response.ReturnError(c, response.DATA_LOSS, "读取持仓交收记录失败")
 		return
 	}
 	views := make([]tradeHoldingView, 0, len(items))
@@ -187,6 +217,11 @@ func ListCustomerPositions(c *gin.Context) {
 	var items []system.TradePosition
 	if err := customerPositionQuery(pgdb.GetClient(), customerID, c.Query("market")).Find(&items).Error; err != nil {
 		response.ReturnError(c, response.DATA_LOSS, "读取持仓失败")
+		return
+	}
+	if err := reconcilePositionViews(pgdb.GetClient(), items, time.Now()); err != nil {
+		zap.L().Error("核对持仓成交记录失败", zap.Uint("customer_id", customerID), zap.Error(err))
+		response.ReturnError(c, response.DATA_LOSS, "读取持仓交收记录失败")
 		return
 	}
 	views := make([]tradePositionView, 0, len(items))
@@ -388,7 +423,7 @@ func executeMobileOrderAt(tx *gorm.DB, customer *system.Customer, security syste
 		return positionErr
 	}
 	if positionErr == nil && position.PositionQty > 0 {
-		if err := positionsettlement.Refresh(&position, now); err != nil {
+		if err := reconcilePositionSettlement(tx, &position, now); err != nil {
 			*rejection = err.Error()
 			return errTradeRejected
 		}

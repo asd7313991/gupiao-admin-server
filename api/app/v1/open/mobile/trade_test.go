@@ -53,6 +53,31 @@ func TestValidateSecurityTrade(t *testing.T) {
 	}
 }
 
+func TestAStockTradingTimeStartsAfterCallAuction(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	for _, tc := range []struct {
+		time string
+		want bool
+	}{
+		{"09:14:59", false},
+		{"09:15:00", false},
+		{"09:25:00", false},
+		{"09:29:59", false},
+		{"09:30:00", true},
+	} {
+		t.Run(tc.time, func(t *testing.T) {
+			now, err := time.ParseInLocation("2006-01-02 15:04:05", "2026-10-23 "+tc.time, location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := isMobileTradingTime(now, "09:30:00", "11:30:00", "13:00:00", "15:00:00")
+			if got != tc.want {
+				t.Fatalf("09:30默认开市边界：got=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCalculateTradeFees(t *testing.T) {
 	settings := mobileTradeSettings{}
 	settings.Trade.BuyCommission = 0.0003

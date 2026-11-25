@@ -73,6 +73,11 @@ func ValidateTime(at int64, now time.Time, hk bool) error {
 		}
 		return fmt.Errorf("交易时段持仓报价已过期，请稍后刷新")
 	}
+	if !hk && weekday && minute >= 9*60+15 && minute < 9*60+30 &&
+		quoted.Format("2006-01-02") == current.Format("2006-01-02") &&
+		quoted.Hour()*60+quoted.Minute() >= 9*60+15 && now.Unix()-at <= 15*60 {
+		return nil
+	}
 	expected := current
 	if !weekday || minute < 9*60+30 {
 		expected = expected.AddDate(0, 0, -1)

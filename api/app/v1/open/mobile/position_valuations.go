@@ -45,7 +45,7 @@ func availablePositionViews(items []system.TradePosition, quotes map[string]posi
 			row.Valuation = &valuation
 		} else {
 			complete = false
-			row.Error = item.Symbol + " 缺少通过时效检查的报价，估值暂不可用"
+			row.Error = item.Symbol + " 暂时没有可用行情，持仓估值先不显示"
 		}
 		rows = append(rows, row)
 	}

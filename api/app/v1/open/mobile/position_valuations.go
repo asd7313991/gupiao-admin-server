@@ -2,6 +2,8 @@ package mobile
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,7 +51,118 @@ func availablePositionViews(items []system.TradePosition, quotes map[string]posi
 		}
 		rows = append(rows, row)
 	}
-	return rows, complete
+	return aggregatePositionValuationViews(rows), complete
+}
+
+func positionViewKey(symbol, currency string, id uint) string {
+	key := symbol + "\x00" + currency
+	if strings.HasSuffix(symbol, ".HK") {
+		key += "\x00" + strconv.FormatUint(uint64(id), 10)
+	}
+	return key
+}
+
+func aggregateHoldingViews(items []tradeHoldingView) []tradeHoldingView {
+	rows := make([]tradeHoldingView, 0, len(items))
+	indexes := make(map[string]int, len(items))
+	for _, item := range items {
+		key := positionViewKey(item.Symbol, item.Currency, item.ID)
+		index, exists := indexes[key]
+		if !exists {
+			indexes[key] = len(rows)
+			rows = append(rows, item)
+			continue
+		}
+		current := &rows[index]
+		totalQty := current.PositionQty + item.PositionQty
+		if totalQty > 0 {
+			current.Leverage = (current.Leverage*current.PositionQty + item.Leverage*item.PositionQty) / totalQty
+		}
+		current.PositionQty = totalQty
+		current.AvailableQty += item.AvailableQty
+		if current.QuantityBasis != item.QuantityBasis {
+			current.QuantityBasis = 0
+		}
+		current.SettlementNotice = combineNotices(current.SettlementNotice, item.SettlementNotice)
+	}
+	return rows
+}
+
+func aggregateTradePositionViews(items []tradePositionView) []tradePositionView {
+	rows := make([]tradePositionView, 0, len(items))
+	indexes := make(map[string]int, len(items))
+	for _, item := range items {
+		key := positionViewKey(item.Symbol, item.Currency, item.ID)
+		index, exists := indexes[key]
+		if !exists {
+			indexes[key] = len(rows)
+			rows = append(rows, item)
+			continue
+		}
+		current := &rows[index]
+		totalQty := current.PositionQty + item.PositionQty
+		if totalQty > 0 {
+			current.Leverage = (current.Leverage*current.PositionQty + item.Leverage*item.PositionQty) / totalQty
+			current.CostPrice = (current.TotalCost + item.TotalCost) / totalQty
+		}
+		current.PositionQty = totalQty
+		current.AvailableQty += item.AvailableQty
+		current.TotalCost += item.TotalCost
+		current.Margin += item.Margin
+		current.BaseMargin += item.BaseMargin
+		current.SupplementalMargin += item.SupplementalMargin
+		current.MarketValue += item.MarketValue
+		current.ProfitLoss += item.ProfitLoss
+		if current.TotalCost > 0 {
+			current.ProfitRate = current.ProfitLoss / current.TotalCost * 100
+		}
+		if current.QuantityBasis != item.QuantityBasis {
+			current.QuantityBasis = 0
+		}
+		current.SettlementNotice = combineNotices(current.SettlementNotice, item.SettlementNotice)
+	}
+	return rows
+}
+
+func aggregatePositionValuationViews(items []positionValuationView) []positionValuationView {
+	rows := make([]positionValuationView, 0, len(items))
+	indexes := make(map[string]int, len(items))
+	for _, item := range items {
+		key := positionViewKey(item.Holding.Symbol, item.Holding.Currency, item.Holding.ID)
+		index, exists := indexes[key]
+		if !exists {
+			indexes[key] = len(rows)
+			rows = append(rows, item)
+			continue
+		}
+		current := &rows[index]
+		totalQty := current.Holding.PositionQty + item.Holding.PositionQty
+		combinedCost := current.CostPrice*current.Holding.PositionQty + item.CostPrice*item.Holding.PositionQty
+		if totalQty > 0 {
+			current.CostPrice = combinedCost / totalQty
+		}
+		current.Holding = aggregateHoldingViews([]tradeHoldingView{current.Holding, item.Holding})[0]
+		current.Margin += item.Margin
+		current.BaseMargin += item.BaseMargin
+		current.SupplementalMargin += item.SupplementalMargin
+		if current.Valuation == nil || item.Valuation == nil {
+			current.Valuation = nil
+			current.Error = combineNotices(current.Error, item.Error)
+			continue
+		}
+		current.Valuation = &aggregateTradePositionViews([]tradePositionView{*current.Valuation, *item.Valuation})[0]
+	}
+	return rows
+}
+
+func combineNotices(current, next string) string {
+	if next == "" || strings.Contains(current, next) {
+		return current
+	}
+	if current == "" {
+		return next
+	}
+	return current + "；" + next
 }
 
 func ListCustomerPositionValuations(c *gin.Context) {

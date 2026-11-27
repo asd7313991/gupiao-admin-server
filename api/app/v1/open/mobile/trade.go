@@ -160,29 +160,15 @@ func customerPositionQuery(db *gorm.DB, customerID uint, market string) *gorm.DB
 	return tradeMarketScope(db, market).Where("customer_id = ? AND position_qty > 0", customerID).Order("id DESC")
 }
 
-func reconcilePositionSettlement(db *gorm.DB, position *system.TradePosition, now time.Time) error {
+func reconcilePositionSettlement(db *gorm.DB, position *system.TradePosition, now time.Time, excludedOrderIDs ...uint) error {
 	if positionsettlement.HongKong(*position) || position.SettlementVerified {
 		return positionsettlement.Refresh(position, now)
 	}
-	var records []system.TradeRecord
-	if err := db.Where("customer_id = ? AND symbol = ?", position.CustomerID, position.Symbol).
-		Order("trade_at ASC, id ASC").Find(&records).Error; err != nil {
-		return fmt.Errorf("读取持仓成交记录失败: %w", err)
-	}
-	return positionsettlement.ReconcileLegacy(position, records, now)
+	return positionsettlement.AutoReconcileLegacyInTransaction(db, position, now, excludedOrderIDs...)
 }
 
 func reconcilePositionViews(db *gorm.DB, items []system.TradePosition, now time.Time) error {
-	for index := range items {
-		if positionsettlement.HongKong(items[index]) || items[index].SettlementVerified {
-			continue
-		}
-		if err := reconcilePositionSettlement(db, &items[index], now); err != nil &&
-			!errors.Is(err, positionsettlement.ErrReview) {
-			return err
-		}
-	}
-	return nil
+	return positionsettlement.AutoReconcileLegacyPositions(db, items, now)
 }
 
 func holdingView(item system.TradePosition) tradeHoldingView {
@@ -208,7 +194,7 @@ func ListCustomerHoldings(c *gin.Context) {
 	for _, item := range items {
 		views = append(views, holdingView(item))
 	}
-	response.ReturnData(c, views)
+	response.ReturnData(c, aggregateHoldingViews(views))
 }
 
 func ListCustomerPositions(c *gin.Context) {
@@ -238,7 +224,7 @@ func ListCustomerPositions(c *gin.Context) {
 	for _, item := range items {
 		views = append(views, valueCustomerPosition(item, quotes[item.Symbol]))
 	}
-	response.ReturnData(c, views)
+	response.ReturnData(c, aggregateTradePositionViews(views))
 }
 
 func valueCustomerPosition(item system.TradePosition, quote positionquote.Quote) tradePositionView {
@@ -423,7 +409,11 @@ func executeMobileOrderAt(tx *gorm.DB, customer *system.Customer, security syste
 		return positionErr
 	}
 	if positionErr == nil && position.PositionQty > 0 {
-		if err := reconcilePositionSettlement(tx, &position, now); err != nil {
+		var excludedOrderIDs []uint
+		if len(orders) > 0 && orders[0].ID != 0 {
+			excludedOrderIDs = append(excludedOrderIDs, orders[0].ID)
+		}
+		if err := reconcilePositionSettlement(tx, &position, now, excludedOrderIDs...); err != nil {
 			*rejection = err.Error()
 			return errTradeRejected
 		}

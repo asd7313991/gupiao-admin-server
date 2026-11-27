@@ -280,7 +280,7 @@ type TradePosition struct {
 	BuyAt              int64    `json:"buy_at"`
 }
 
-// PositionSettlementReview 保存后台交收核对的前后快照。
+// PositionSettlementReview 保存交收核对前后快照，ReviewerID 为 0 表示系统自动核对。
 type PositionSettlementReview struct {
 	gorm.Model
 	PositionID uint `gorm:"index;not null"`

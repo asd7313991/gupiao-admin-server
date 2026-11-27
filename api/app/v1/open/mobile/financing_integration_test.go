@@ -49,7 +49,8 @@ func financingTestDB(t *testing.T) *gorm.DB {
 	}
 	t.Cleanup(func() { sqlDB.Close() })
 	if err := db.AutoMigrate(&system.Customer{}, &system.StockSecurity{}, &system.TradePosition{}, &system.TradeRecord{},
-		&system.CustomerFundRecord{}, &system.LimitOrder{}, &system.AppSystemSetting{}, &system.HongKongTradeRequest{}); err != nil {
+		&system.CustomerFundRecord{}, &system.LimitOrder{}, &system.AppSystemSetting{}, &system.HongKongTradeRequest{},
+		&system.PositionSettlementReview{}); err != nil {
 		t.Fatal(err)
 	}
 	return db

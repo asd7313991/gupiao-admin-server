@@ -2,10 +2,12 @@ package mobile
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
 	"api-server/db/pgdb/system"
+	"api-server/util/positionbasis"
 	"api-server/util/positionquote"
 	"gorm.io/gorm"
 )
@@ -28,5 +30,22 @@ func TestPositionValuationsKeepUnpricedLedgerWithoutFakeAssets(t *testing.T) {
 	rows, complete = availablePositionViews(nil, nil)
 	if !complete || rows == nil || len(rows) != 0 {
 		t.Fatal("真实空持仓必须返回空数组")
+	}
+}
+
+func TestPositionValuationsAggregateDuplicateAStockRows(t *testing.T) {
+	items := []system.TradePosition{
+		{Model: gorm.Model{ID: 1}, Symbol: "600106.SH", Currency: "CNY", SettlementVerified: true,
+			PositionQty: 100, AvailableQty: 80, QuantityBasis: positionbasis.Actual, CostPrice: 10, TotalCost: 1000, Margin: 200},
+		{Model: gorm.Model{ID: 2}, Symbol: "600106.SH", Currency: "CNY", SettlementVerified: true,
+			PositionQty: 200, AvailableQty: 150, QuantityBasis: positionbasis.Actual, CostPrice: 12, TotalCost: 2400, Margin: 480},
+	}
+	rows, complete := availablePositionViews(items, map[string]positionquote.Quote{
+		"600106.SH": {Price: 15, At: 1, Source: "tencent"},
+	})
+	if !complete || len(rows) != 1 || rows[0].Holding.PositionQty != 300 || rows[0].Holding.AvailableQty != 230 ||
+		math.Abs(rows[0].CostPrice-11.333333333333334) > 0.000001 ||
+		rows[0].Valuation == nil || rows[0].Valuation.MarketValue != 4500 {
+		t.Fatalf("会员估值应汇总同一A股的持仓、可卖数和成本：%+v", rows)
 	}
 }

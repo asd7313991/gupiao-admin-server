@@ -46,6 +46,10 @@ func ListPositions(c *gin.Context) {
 		response.ReturnError(c, response.DATA_LOSS, "查询持仓失败")
 		return
 	}
+	if err := positionsettlement.AutoReconcileLegacyPositions(pgdb.GetClient(), items, time.Now()); err != nil {
+		response.ReturnError(c, response.DATA_LOSS, "自动核对持仓交收失败")
+		return
+	}
 	livePrices, err := fetchLivePositionPrices(items)
 	if err != nil {
 		response.ReturnError(c, response.UNAVAILABLE, "读取实时持仓行情失败，请稍后重试")

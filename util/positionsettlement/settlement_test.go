@@ -127,6 +127,57 @@ func TestReconcileLegacyPositionFromCompleteTradeBatches(t *testing.T) {
 	}
 }
 
+func TestReconcileLegacyAcceptsSameDayTimestampDriftAndUsesVerifiedFrozenQuantity(t *testing.T) {
+	buyAt := moment(t, "2026-11-20 13:55:12")
+	trades := []system.TradeRecord{
+		{Symbol: "600410.SH", Direction: "买入", Quantity: 35900, TradeAt: buyAt.Unix()},
+		{Symbol: "600410.SH", Direction: "卖出", Quantity: 100, TradeAt: moment(t, "2026-11-20 14:07:42").Unix()},
+	}
+	position := system.TradePosition{
+		Symbol: "600410.SH", PositionQty: 35800, AvailableQty: 0,
+		BuyAt: moment(t, "2026-11-20 13:55:11").Unix(),
+	}
+	if err := ReconcileLegacyWithFrozen(&position, trades, moment(t, "2026-11-27 10:00:00"), 0); err != nil {
+		t.Fatal("同日内的持仓与成交时间差异不应阻止完整批次自动核对", err)
+	}
+	if !position.SettlementVerified || position.AvailableQty != 35800 || position.UnsettledQty != 0 {
+		t.Fatalf("全部已交收股数应恢复为可卖：%+v", position)
+	}
+
+	frozen := system.TradePosition{
+		Symbol: "600410.SH", PositionQty: 35800, AvailableQty: 0,
+		BuyAt: moment(t, "2026-11-20 13:55:11").Unix(),
+	}
+	if err := ReconcileLegacyWithFrozen(&frozen, trades, moment(t, "2026-11-27 10:00:00"), 100); err != nil {
+		t.Fatal(err)
+	}
+	if frozen.AvailableQty != 35700 {
+		t.Fatalf("应保留已核实的挂单冻结股数：%+v", frozen)
+	}
+}
+
+func TestReconcileLegacyFromBuyAtUsesTPlusOneAndReservesPendingSells(t *testing.T) {
+	boughtAt := moment(t, "2026-11-20 13:55:11")
+	position := system.TradePosition{Symbol: "600410.SH", PositionQty: 1000, BuyAt: boughtAt.Unix()}
+	if err := ReconcileLegacyFromBuyAt(&position, moment(t, "2026-11-20 15:00:00"), 100); err != nil {
+		t.Fatal(err)
+	}
+	if !position.SettlementVerified || position.AvailableQty != 0 || position.UnsettledQty != 900 ||
+		position.SellableAt != moment(t, "2026-11-23 00:00:00").Unix() {
+		t.Fatalf("未过T+1的股数仍不可卖，且应保留待成交冻结：%+v", position)
+	}
+	if err := Refresh(&position, moment(t, "2026-11-23 00:00:00")); err != nil ||
+		position.AvailableQty != 900 || position.UnsettledQty != 0 {
+		t.Fatalf("T+1后只释放未被冻结股数：%+v, %v", position, err)
+	}
+
+	incomplete := system.TradePosition{Symbol: "600410.SH", PositionQty: 1000, BuyAt: boughtAt.Unix()}
+	if err := ReconcileLegacyFromBuyAt(&incomplete, moment(t, "2026-11-23 10:00:00"), 100); err != nil ||
+		incomplete.AvailableQty != 900 || incomplete.UnsettledQty != 0 {
+		t.Fatalf("历史记录不完整时应依据买入时间判T+1并扣除冻结：%+v, %v", incomplete, err)
+	}
+}
+
 func TestHongKongStaysTPlusZero(t *testing.T) {
 	now := moment(t, "2026-11-20 10:00:00")
 	p := system.TradePosition{Symbol: "00700.HK", Currency: "HKD", PositionQty: 100, AvailableQty: 50}

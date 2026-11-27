@@ -75,11 +75,16 @@ func Refresh(p *system.TradePosition, now time.Time) error {
 // ReconcileLegacy reconstructs an unverified position only when its complete trade
 // history matches the current quantity. Incomplete histories remain locked for review.
 func ReconcileLegacy(p *system.TradePosition, records []system.TradeRecord, now time.Time) error {
+	return ReconcileLegacyWithFrozen(p, records, now, p.PositionQty-p.AvailableQty)
+}
+
+func ReconcileLegacyWithFrozen(p *system.TradePosition, records []system.TradeRecord, now time.Time, frozen float64) error {
 	if HongKong(*p) || p.SettlementVerified {
 		return Refresh(p, now)
 	}
 	if !validShareQuantity(p.PositionQty) || p.PositionQty <= 0 ||
-		!validShareQuantity(p.AvailableQty) || p.AvailableQty > p.PositionQty || len(records) == 0 {
+		!validShareQuantity(p.AvailableQty) || p.AvailableQty > p.PositionQty ||
+		!validQuantity(frozen) || frozen > p.PositionQty || len(records) == 0 {
 		return ErrReview
 	}
 
@@ -127,7 +132,9 @@ func ReconcileLegacy(p *system.TradePosition, records []system.TradeRecord, now 
 			return ErrReview
 		}
 	}
-	if firstBuyAt == 0 || (p.BuyAt > 0 && p.BuyAt != firstBuyAt) {
+	firstBuyDate := time.Unix(firstBuyAt, 0).In(Location).Format(time.DateOnly)
+	positionBuyDate := time.Unix(p.BuyAt, 0).In(Location).Format(time.DateOnly)
+	if firstBuyAt == 0 || (p.BuyAt > 0 && positionBuyDate != firstBuyDate) {
 		return ErrReview
 	}
 
@@ -162,7 +169,6 @@ func ReconcileLegacy(p *system.TradePosition, records []system.TradeRecord, now 
 	if math.Abs(reconstructed-p.PositionQty) > 0.000001 {
 		return ErrReview
 	}
-	frozen := p.PositionQty - p.AvailableQty
 	if settled < frozen {
 		return ErrReview
 	}
@@ -170,6 +176,38 @@ func ReconcileLegacy(p *system.TradePosition, records []system.TradeRecord, now 
 	p.AvailableQty = settled - frozen
 	p.UnsettledQty = unsettled
 	p.SellableAt = sellableAt
+	return Refresh(p, now)
+}
+
+func ReconcileLegacyFromBuyAt(p *system.TradePosition, now time.Time, frozen float64) error {
+	if HongKong(*p) || p.SettlementVerified {
+		return Refresh(p, now)
+	}
+	if !validShareQuantity(p.PositionQty) || p.PositionQty <= 0 ||
+		!validQuantity(frozen) || p.BuyAt <= 0 || p.BuyAt > now.Unix() {
+		return ErrReview
+	}
+
+	boughtAt := time.Unix(p.BuyAt, 0).In(Location)
+	firstKnownOpen := time.Date(2026, 1, 5, 0, 0, 0, 0, Location)
+	var sellableAt int64
+	if boughtAt.Year() < 2026 && !now.Before(firstKnownOpen) {
+		sellableAt = firstKnownOpen.Unix()
+	} else {
+		day, err := NextTradingDay(boughtAt)
+		if err != nil {
+			return ErrReview
+		}
+		sellableAt = day.Unix()
+	}
+
+	reserved := math.Min(frozen, p.PositionQty)
+	p.SettlementVerified = true
+	p.AvailableQty, p.UnsettledQty, p.SellableAt = p.PositionQty-reserved, 0, 0
+	if now.Unix() < sellableAt {
+		p.AvailableQty, p.UnsettledQty, p.SellableAt = 0, p.PositionQty-reserved, sellableAt
+	}
+	p.SettlementNotice = "历史成交记录不完整，已按持仓买入时间估算T+1交收"
 	return Refresh(p, now)
 }
 
